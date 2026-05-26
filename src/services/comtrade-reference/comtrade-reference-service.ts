@@ -36,10 +36,10 @@ export class ComtradeReferenceService {
   /** Fetch and index all reference data. Called once from setup(). */
   async initialize(): Promise<void> {
     const [reporters, partners, hsEntries, ebopsEntries] = await Promise.all([
-      this.fetchJson<RawReporterEntry[]>('Reporters.json'),
-      this.fetchJson<RawPartnerEntry[]>('partnerAreas.json'),
-      this.fetchJson<RawHsEntry[]>('HS.json'),
-      this.fetchJson<RawEbopsEntry[]>('EB10.json'),
+      this.fetchJson<RawReporterEntry>('Reporters.json'),
+      this.fetchJson<RawPartnerEntry>('partnerAreas.json'),
+      this.fetchJson<RawHsEntry>('HS.json'),
+      this.fetchJson<RawEbopsEntry>('EB10.json'),
     ]);
 
     // Index reporters — these are valid as reporter codes
@@ -52,7 +52,7 @@ export class ComtradeReferenceService {
           name: r.reporterDesc,
           ...(r.reporterCodeIsoAlpha3 && { iso3: r.reporterCodeIsoAlpha3 }),
           validAsReporter: true,
-          isGroup: r.isGroup === 1 || r.isGroup === '1',
+          isGroup: r.isGroup === true || r.isGroup === 1 || r.isGroup === '1',
         });
       }
     }
@@ -65,7 +65,7 @@ export class ComtradeReferenceService {
           name: p.PartnerDesc,
           ...(p.PartnerCodeIsoAlpha3 && { iso3: p.PartnerCodeIsoAlpha3 }),
           validAsReporter: reporterCodes.has(p.PartnerCode),
-          isGroup: p.isGroup === 1 || p.isGroup === '1',
+          isGroup: p.isGroup === true || p.isGroup === 1 || p.isGroup === '1',
         });
       }
     }
@@ -86,7 +86,7 @@ export class ComtradeReferenceService {
         text: h.text,
         ...(h.parent && { parent: h.parent }),
         aggrLevel,
-        isLeaf: h.isLeaf === 1 || h.isLeaf === true,
+        isLeaf: h.isLeaf === true || h.isLeaf === 1 || h.isLeaf === '1',
         recommendedQueryCode: h.id,
       });
     }
@@ -180,7 +180,7 @@ export class ComtradeReferenceService {
     return results;
   }
 
-  private fetchJson<T>(filename: string): Promise<T> {
+  private fetchJson<T>(filename: string): Promise<T[]> {
     return withRetry(
       async () => {
         const url = `${REFERENCE_BASE}/${filename}`;
@@ -193,7 +193,12 @@ export class ComtradeReferenceService {
         if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
           throw new Error('Reference endpoint returned HTML — service may be unavailable.');
         }
-        return JSON.parse(text) as T;
+        const parsed = JSON.parse(text) as unknown;
+        // All Comtrade reference files wrap their array in { results: [...] }
+        if (parsed !== null && typeof parsed === 'object' && 'results' in parsed) {
+          return (parsed as { results: T[] }).results;
+        }
+        return parsed as T[];
       },
       {
         operation: `ComtradeReferenceService.fetchJson:${filename}`,

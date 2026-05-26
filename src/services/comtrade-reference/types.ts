@@ -81,7 +81,7 @@ export interface EbopsCategory {
 export interface RawReporterEntry {
   entryEffectiveDate?: string;
   entryExpiredDate?: string;
-  isGroup?: string | number;
+  isGroup?: boolean | string | number;
   reporterCode: number;
   reporterCodeIsoAlpha3?: string;
   reporterDesc: string;
@@ -92,7 +92,7 @@ export interface RawReporterEntry {
 export interface RawPartnerEntry {
   entryEffectiveDate?: string;
   entryExpiredDate?: string;
-  isGroup?: string | number;
+  isGroup?: boolean | string | number;
   PartnerCode: number;
   PartnerCodeIsoAlpha3?: string;
   PartnerDesc: string;
@@ -103,7 +103,7 @@ export interface RawPartnerEntry {
 export interface RawHsEntry {
   aggrLevel?: number;
   id: string;
-  isLeaf?: number | boolean;
+  isLeaf?: number | boolean | string;
   parent?: string;
   text: string;
 }

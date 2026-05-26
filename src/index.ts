@@ -55,8 +55,13 @@ await createApp({
 
     const countryCount = refService.getAllCountries().length;
     const hsCount = refService.getAllHsCodes().length;
-    core.logger.info(
-      `Comtrade reference data loaded. countries=${countryCount} hsCodes=${hsCount}`,
-    );
+    // Defer: logger.initialize() runs after setup() returns, so any log emitted here is
+    // silently dropped. setImmediate schedules after the current event-loop tick, by which
+    // point the framework has completed initialization and the logger is live.
+    setImmediate(() => {
+      core.logger.info(
+        `Comtrade reference data loaded. countries=${countryCount} hsCodes=${hsCount}`,
+      );
+    });
   },
 });

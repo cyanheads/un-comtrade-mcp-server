@@ -138,9 +138,13 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
 
     const reporterDesc = result.records[0]?.reporterDesc ?? String(input.reporter_code);
 
-    // Filter to the requested aggr_level and exclude TOTAL rows
+    // Filter to the requested aggr_level and exclude TOTAL rows.
+    // The Comtrade preview endpoint returns aggrLevel=null for all records — infer from code length.
+    const inferAggrLevel = (cmdCode: string): 2 | 4 | 6 =>
+      cmdCode.length <= 2 ? 2 : cmdCode.length <= 4 ? 4 : 6;
     const rows = result.records.filter(
-      (r) => r.cmdCode !== 'TOTAL' && (r.aggrLevel === input.aggr_level || r.aggrLevel == null),
+      (r) =>
+        r.cmdCode !== 'TOTAL' && (r.aggrLevel ?? inferAggrLevel(r.cmdCode)) === input.aggr_level,
     );
 
     const sorted = rows.sort((a, b) => (b.primaryValue ?? 0) - (a.primaryValue ?? 0));
