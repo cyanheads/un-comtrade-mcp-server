@@ -13,7 +13,7 @@
 
 </div>
 
-> **Local-only deployment required.** The UN Comtrade license agreement (§5) explicitly prohibits redistribution of data without prior written UN permission. This server must never be run as a hosted proxy. Connect with your own Comtrade subscription key — data flows directly from your machine to UN servers, nothing is cached or forwarded.
+> **Note:** The UN Comtrade license agreement (§5) prohibits redistributing data without prior written UN permission. Connect with your own Comtrade subscription key.
 
 ---
 
