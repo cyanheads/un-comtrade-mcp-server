@@ -1,6 +1,6 @@
 # un-comtrade-mcp-server - Directory Structure
 
-Generated on: 2026-05-26 00:19:54
+Generated on: 2026-05-26 01:50:54
 
 ```text
 un-comtrade-mcp-server/
@@ -104,26 +104,55 @@ un-comtrade-mcp-server/
 │   └── tool-defs-analysis/
 │       └── SKILL.md
 ├── src/
+│   ├── config/
+│   │   └── server-config.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
 │   │   │   └── definitions/
-│   │   │       └── echo.prompt.ts
 │   │   ├── resources/
 │   │   │   └── definitions/
-│   │   │       ├── echo-app-ui.app-resource.ts
-│   │   │       └── echo.resource.ts
+│   │   │       ├── countries.resource.ts
+│   │   │       └── hs-classification.resource.ts
 │   │   └── tools/
 │   │       └── definitions/
-│   │           ├── echo-app.app-tool.ts
-│   │           └── echo.tool.ts
+│   │           ├── get-data-availability.tool.ts
+│   │           ├── get-services-trade.tool.ts
+│   │           ├── get-top-commodities.tool.ts
+│   │           ├── get-top-partners.tool.ts
+│   │           ├── get-trade-balance.tool.ts
+│   │           ├── get-trade-flows.tool.ts
+│   │           ├── list-service-categories.tool.ts
+│   │           ├── lookup-countries.tool.ts
+│   │           └── search-commodities.tool.ts
+│   ├── services/
+│   │   ├── comtrade-data/
+│   │   │   ├── comtrade-data-service.ts
+│   │   │   └── types.ts
+│   │   ├── comtrade-meta/
+│   │   │   ├── comtrade-meta-service.ts
+│   │   │   └── types.ts
+│   │   └── comtrade-reference/
+│   │       ├── comtrade-reference-service.ts
+│   │       └── types.ts
 │   └── index.ts
 ├── tests/
+│   ├── mcp-server/
+│   │   └── tools/
+│   │       └── definitions/
 │   ├── prompts/
-│   │   └── echo.prompt.test.ts
 │   ├── resources/
-│   │   └── echo.resource.test.ts
+│   │   ├── countries.resource.test.ts
+│   │   └── hs-classification.resource.test.ts
 │   └── tools/
-│       └── echo.tool.test.ts
+│       ├── get-data-availability.tool.test.ts
+│       ├── get-services-trade.tool.test.ts
+│       ├── get-top-commodities.tool.test.ts
+│       ├── get-top-partners.tool.test.ts
+│       ├── get-trade-balance.tool.test.ts
+│       ├── get-trade-flows.tool.test.ts
+│       ├── list-service-categories.tool.test.ts
+│       ├── lookup-countries.tool.test.ts
+│       └── search-commodities.tool.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
