@@ -38,7 +38,7 @@ ENV NODE_ENV=production
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 LABEL org.opencontainers.image.title="un-comtrade-mcp-server"
-LABEL org.opencontainers.image.description=""
+LABEL org.opencontainers.image.description="Access UN Comtrade international merchandise and services trade statistics via MCP."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 # Copy dependency manifests
