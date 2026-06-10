@@ -1,6 +1,6 @@
 # un-comtrade-mcp-server - Directory Structure
 
-Generated on: 2026-05-26 07:43:30
+Generated on: 2026-06-10 18:18:17
 
 ```text
 un-comtrade-mcp-server/
@@ -144,6 +144,8 @@ un-comtrade-mcp-server/
 │   ├── resources/
 │   │   ├── countries.resource.test.ts
 │   │   └── hs-classification.resource.test.ts
+│   ├── services/
+│   │   └── comtrade-data-service.test.ts
 │   └── tools/
 │       ├── get-data-availability.tool.test.ts
 │       ├── get-services-trade.tool.test.ts
@@ -162,6 +164,7 @@ un-comtrade-mcp-server/
 ├── bun.lock
 ├── bunfig.toml
 ├── CHANGELOG.md
+├── CITATION.cff
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile

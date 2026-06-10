@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: un-comtrade-mcp-server
+abstract: "Model Context Protocol (MCP) server for UN Comtrade, providing international trade statistics, country and commodity lookups, trade flows, balances, and rankings."
+type: software
+authors:
+  - family-names: Hand
+    given-names: Casey
+    orcid: "https://orcid.org/0009-0009-3726-568X"
+repository-code: "https://github.com/cyanheads/un-comtrade-mcp-server"
+license: Apache-2.0
+keywords:
+  - mcp
+  - model-context-protocol
+  - un-comtrade
+  - international-trade
+  - trade-statistics

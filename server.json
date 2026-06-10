@@ -6,14 +6,14 @@
     "url": "https://github.com/cyanheads/un-comtrade-mcp-server",
     "source": "github"
   },
-  "version": "0.1.3",
+  "version": "0.1.4",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/un-comtrade-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "packageArguments": [
         {
           "type": "positional",
@@ -25,6 +25,12 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "COMTRADE_SUBSCRIPTION_KEY",
+          "description": "Azure API Management key from comtradedeveloper.un.org. Optional — without it, tools fall back to the public preview endpoint (500-record cap).",
+          "format": "string",
+          "isRequired": false
+        },
         {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
@@ -42,7 +48,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/un-comtrade-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "packageArguments": [
         {
           "type": "positional",
