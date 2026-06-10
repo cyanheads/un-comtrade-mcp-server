@@ -69,11 +69,19 @@ export interface RawTradeRow {
   cifvalue?: number | null;
   cmdCode?: string;
   cmdDesc?: string;
+  /** Customs procedure code. "C00" is the top-level aggregate. */
+  customsCode?: string | null;
   flowCode?: string;
   fobvalue?: number | null;
   grossWgt?: number | null;
+  /** True when this row is an aggregate across dimension breakdowns. */
+  isAggregate?: boolean | null;
   isReported?: boolean | null;
+  /** Mode of transport code. 0 is the top-level aggregate. */
+  motCode?: number | null;
   netWgt?: number | null;
+  /** Secondary partner consignment code. 0 is the top-level aggregate. */
+  partner2Code?: number | null;
   partnerCode?: number;
   partnerDesc?: string;
   period?: string | number;
@@ -81,7 +89,6 @@ export interface RawTradeRow {
   qty?: number | null;
   reporterCode?: number;
   reporterDesc?: string;
-  [key: string]: unknown;
 }
 
 /** Raw API response envelope from Comtrade data endpoints. */

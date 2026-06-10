@@ -91,15 +91,60 @@ export class ComtradeDataService {
     const rows = raw.data ?? [];
     const totalCount = raw.count ?? rows.length;
     const ref = getComtradeReferenceService();
+    const isServicesQuery = typeCode === 'S';
 
-    const records: TradeFlowRecord[] = rows.map((row) => {
+    /**
+     * Comtrade preview returns one row per (motCode × customsCode × partner2Code) combination,
+     * so summing all rows inflates totals by the number of dimension combinations.
+     *
+     * For world-aggregate queries (partnerCode=0): keep only the top-level aggregate row
+     * (motCode=0, customsCode=C00, partner2Code=0), which carries the correct single total.
+     *
+     * For all-partners single-commodity queries (no partnerCode, no aggrLevel, single cmdCode):
+     * dedup by partnerCode keeping the max-primaryValue row per partner, since most partners
+     * lack a C00 aggregate row and the highest-value row is the bilateral total. Only safe when
+     * the query targets a single commodity (TOTAL or one code) — commodity breakdown queries
+     * (aggrLevel set, or multi-code cmdCode) must NOT be deduped because they intentionally
+     * return multiple rows per partner (one per commodity code).
+     *
+     * Services data (typeCode=S) does not exhibit this dimension expansion — all rows carry
+     * motCode=0/C00/partner2Code=0, so no filtering is needed there.
+     */
+    let filteredRows = rows;
+    if (!isServicesQuery) {
+      if (params.partnerCode === 0) {
+        // World-aggregate: exactly one correct row with the top-level dimension combination
+        filteredRows = rows.filter(
+          (r) => r.motCode === 0 && r.customsCode === 'C00' && r.partner2Code === 0,
+        );
+      } else if (
+        params.partnerCode === undefined &&
+        params.aggrLevel === undefined &&
+        !params.cmdCode?.includes(',')
+      ) {
+        // All-partners, single-commodity: dedup by partnerCode keeping max primaryValue row
+        const bestByPartner = new Map<number, (typeof rows)[0]>();
+        for (const row of rows) {
+          const pc = row.partnerCode ?? 0;
+          const existing = bestByPartner.get(pc);
+          if (!existing || (row.primaryValue ?? 0) > (existing.primaryValue ?? 0)) {
+            bestByPartner.set(pc, row);
+          }
+        }
+        filteredRows = Array.from(bestByPartner.values());
+      }
+    }
+
+    const records: TradeFlowRecord[] = filteredRows.map((row) => {
       const reporterEntry =
         typeof row.reporterCode === 'number' ? ref.getCountryByCode(row.reporterCode) : undefined;
       const partnerEntry =
         typeof row.partnerCode === 'number' ? ref.getCountryByCode(row.partnerCode) : undefined;
       const cmdEntry =
         typeof row.cmdCode === 'string' && row.cmdCode !== 'TOTAL'
-          ? ref.getHsCode(row.cmdCode)
+          ? isServicesQuery
+            ? ref.getEbopsCategory(row.cmdCode)
+            : ref.getHsCode(row.cmdCode)
           : undefined;
 
       return {
