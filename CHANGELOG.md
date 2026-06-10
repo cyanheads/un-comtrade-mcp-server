@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.4](changelog/0.1.x/0.1.4.md) — 2026-06-10
+
+Trade total accuracy, partner deduplication, services EBOPS lookup, explicit raw-row types
+
 ## [0.1.3](changelog/0.1.x/0.1.3.md) — 2026-05-26
 
 package.json metadata, bun run scripts, install badges, FUNDING.yml, Docker image
