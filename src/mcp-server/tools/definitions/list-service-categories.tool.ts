@@ -55,6 +55,9 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
       .describe('EBOPS 2010 service categories matching the query.'),
     totalMatches: z.number().describe('Total matching categories before limit truncation.'),
     shown: z.number().describe('Number of categories returned.'),
+    truncated: z
+      .boolean()
+      .describe('True when categories were capped at the limit (totalMatches exceeds shown).'),
     notice: z
       .string()
       .optional()
@@ -82,6 +85,7 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
         categories: [],
         totalMatches: 0,
         shown: 0,
+        truncated: false,
         notice:
           `No EBOPS service categories matched` +
           (input.query ? ` "${input.query}"` : '') +
@@ -101,6 +105,7 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
       })),
       totalMatches: total,
       shown: sliced.length,
+      truncated: total > sliced.length,
       ...(total > sliced.length && {
         notice: `Showing ${sliced.length} of ${total} categories. Narrow your query or increase the limit.`,
       }),
@@ -110,7 +115,7 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
   format: (result) => {
     const lines = [
       `## EBOPS 2010 Service Categories`,
-      `**Matches:** ${result.totalMatches} | **Shown:** ${result.shown}`,
+      `**Matches:** ${result.totalMatches} | **Shown:** ${result.shown} | **Truncated:** ${result.truncated ? 'yes' : 'no'}`,
     ];
     if (result.notice) {
       lines.push(`\n> ${result.notice}`);

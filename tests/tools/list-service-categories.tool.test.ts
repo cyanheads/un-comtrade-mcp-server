@@ -62,6 +62,7 @@ describe('listServiceCategoriesTool', () => {
     const result = listServiceCategoriesTool.handler(input, ctx);
     expect(result.shown).toBe(2);
     expect(result.totalMatches).toBe(5);
+    expect(result.truncated).toBe(true);
     expect(result.notice).toContain('Showing');
   });
 
@@ -70,6 +71,7 @@ describe('listServiceCategoriesTool', () => {
     const input = listServiceCategoriesTool.input.parse({ query: 'zzz_nonexistent' });
     const result = listServiceCategoriesTool.handler(input, ctx);
     expect(result.totalMatches).toBe(0);
+    expect(result.truncated).toBe(false);
     expect(result.notice).toBeDefined();
     expect(result.notice).toContain('zzz_nonexistent');
   });
@@ -90,6 +92,7 @@ describe('listServiceCategoriesTool', () => {
       ],
       totalMatches: 2,
       shown: 2,
+      truncated: false,
     };
     const blocks = listServiceCategoriesTool.format!(output);
     expect(blocks[0].type).toBe('text');

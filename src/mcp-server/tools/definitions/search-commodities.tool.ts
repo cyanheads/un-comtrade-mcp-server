@@ -83,6 +83,9 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       .describe('HS codes matching the query.'),
     totalMatches: z.number().describe('Total matching codes (before limit truncation).'),
     shown: z.number().describe('Number of codes returned in this response.'),
+    truncated: z
+      .boolean()
+      .describe('True when matches were capped at the limit (totalMatches exceeds shown).'),
     notice: z
       .string()
       .optional()
@@ -116,6 +119,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
         matches: [],
         totalMatches: 0,
         shown: 0,
+        truncated: false,
         notice:
           `No HS commodity codes matched "${input.query}"` +
           (input.aggr_level ? ` at aggr_level ${input.aggr_level}` : '') +
@@ -137,6 +141,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       })),
       totalMatches: total,
       shown: sliced.length,
+      truncated: total > sliced.length,
       ...(total > sliced.length && {
         notice: `Showing ${sliced.length} of ${total} matches. Increase the limit parameter or narrow your query to see more results.`,
       }),
@@ -146,7 +151,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
   format: (result) => {
     const lines = [
       `## HS Commodity Code Search`,
-      `**Matches:** ${result.totalMatches} | **Shown:** ${result.shown}`,
+      `**Matches:** ${result.totalMatches} | **Shown:** ${result.shown} | **Truncated:** ${result.truncated ? 'yes' : 'no'}`,
     ];
     if (result.notice) {
       lines.push(`\n> ${result.notice}`);

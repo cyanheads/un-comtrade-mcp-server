@@ -109,6 +109,7 @@ describe('searchCommoditiesTool', () => {
     const result = searchCommoditiesTool.handler(input, ctx);
     expect(result.totalMatches).toBe(0);
     expect(result.matches).toHaveLength(0);
+    expect(result.truncated).toBe(false);
     expect(result.notice).toContain('xyzzy_nonexistent_commodity');
   });
 
@@ -119,6 +120,7 @@ describe('searchCommoditiesTool', () => {
     const result = searchCommoditiesTool.handler(input, ctx);
     expect(result.shown).toBeLessThanOrEqual(1);
     if (result.totalMatches > 1) {
+      expect(result.truncated).toBe(true);
       expect(result.notice).toBeDefined();
       expect(result.notice).toContain('Showing');
     }
@@ -147,6 +149,7 @@ describe('searchCommoditiesTool', () => {
       ],
       totalMatches: 1,
       shown: 1,
+      truncated: false,
     };
     const blocks = searchCommoditiesTool.format!(output);
     expect(blocks[0].type).toBe('text');
