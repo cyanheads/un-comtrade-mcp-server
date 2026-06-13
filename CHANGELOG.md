@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-06-12
+
+Adopt @cyanheads/mcp-ts-core ^0.10.6, add truncated flag to search tools, explicit display identity
+
 ## [0.1.4](changelog/0.1.x/0.1.4.md) — 2026-06-10
 
 Trade total accuracy, partner deduplication, services EBOPS lookup, explicit raw-row types
