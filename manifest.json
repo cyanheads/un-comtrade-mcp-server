@@ -1,14 +1,10 @@
 {
   "manifest_version": "0.3",
   "name": "un-comtrade-mcp-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "UN Comtrade international trade statistics via MCP. Country/HS lookups, flows, balances, rankings.",
   "author": {
     "name": "cyanheads"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/cyanheads/un-comtrade-mcp-server"
   },
   "homepage": "https://github.com/cyanheads/un-comtrade-mcp-server#readme",
   "license": "Apache-2.0",
