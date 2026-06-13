@@ -22,6 +22,8 @@ import { initComtradeMetaService } from './services/comtrade-meta/comtrade-meta-
 import { initComtradeReferenceService } from './services/comtrade-reference/comtrade-reference-service.js';
 
 await createApp({
+  name: 'un-comtrade-mcp-server',
+  title: 'un-comtrade-mcp-server',
   tools: [
     lookupCountriesTool,
     searchCommoditiesTool,
