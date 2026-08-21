@@ -3,7 +3,7 @@
  * @module tests/tools/get-top-partners.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTopPartnersTool } from '@/mcp-server/tools/definitions/get-top-partners.tool.js';
 import {
@@ -128,7 +128,7 @@ describe('getTopPartnersTool', () => {
     });
     const result = await getTopPartnersTool.handler(input, ctx);
     expect(result.partners).toHaveLength(0);
-    expect(result.notice).toBeDefined();
+    expect(getEnrichment(ctx).notice).toBeDefined();
   });
 
   it('formats output with reporterCode, flowCode, period, cmdCode, and ranks', () => {

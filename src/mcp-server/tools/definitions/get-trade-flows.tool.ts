@@ -104,11 +104,14 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       .string()
       .optional()
       .describe('How to get more data when truncated — requires a subscription key.'),
+  }),
+
+  enrichment: {
     notice: z
       .string()
       .optional()
       .describe('Recovery hint when no records are returned. Absent on successful responses.'),
-  }),
+  },
 
   errors: [
     {
@@ -150,16 +153,16 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
     );
 
     if (result.records.length === 0) {
-      const hint =
+      ctx.enrich.notice(
         `No trade flow records found for reporter ${input.reporter_code}, ` +
-        `flow=${input.flow_code}, periods=[${input.period.join(', ')}]. ` +
-        `Use comtrade_get_data_availability to check if data exists for this period.`;
+          `flow=${input.flow_code}, periods=[${input.period.join(', ')}]. ` +
+          `Use comtrade_get_data_availability to check if data exists for this period.`,
+      );
       return {
         records: [],
         totalCount: 0,
         shown: 0,
         truncated: false,
-        notice: hint,
       };
     }
 
@@ -176,9 +179,6 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
     const lines = [`## Trade Flow Records`, `**Records:** ${result.shown} of ${result.totalCount}`];
     if (result.truncated && result.truncationHint) {
       lines.push(`\n> **Truncated:** ${result.truncationHint}`);
-    }
-    if (result.notice) {
-      lines.push(`\n> ${result.notice}`);
     }
     for (const r of result.records) {
       lines.push(

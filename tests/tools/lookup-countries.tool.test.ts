@@ -3,7 +3,7 @@
  * @module tests/tools/lookup-countries.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { lookupCountriesTool } from '@/mcp-server/tools/definitions/lookup-countries.tool.js';
 import {
@@ -101,7 +101,7 @@ describe('lookupCountriesTool', () => {
     const input = lookupCountriesTool.input.parse({ query: 'world', role: 'reporter' });
     const result = await lookupCountriesTool.handler(input, ctx);
     expect(result.totalMatches).toBe(0);
-    expect(result.notice).toBeDefined();
+    expect(getEnrichment(ctx).notice).toBeDefined();
   });
 
   it('excludes groups when include_groups=false', async () => {
@@ -128,7 +128,7 @@ describe('lookupCountriesTool', () => {
     const result = await lookupCountriesTool.handler(input, ctx);
     expect(result.totalMatches).toBe(0);
     expect(result.matches).toHaveLength(0);
-    expect(result.notice).toContain('Zzyzxland');
+    expect(getEnrichment(ctx).notice).toContain('Zzyzxland');
   });
 
   it('returns results sorted by name', async () => {
@@ -159,16 +159,5 @@ describe('lookupCountriesTool', () => {
     expect(text).toContain('840');
     expect(text).toContain('USA');
     expect(text).toContain('reporter ✓');
-  });
-
-  it('formats empty result with notice', () => {
-    const output = {
-      matches: [],
-      totalMatches: 0,
-      notice: 'No matches for "xyz".',
-    };
-    const blocks = lookupCountriesTool.format!(output);
-    const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('No matches for "xyz".');
   });
 });

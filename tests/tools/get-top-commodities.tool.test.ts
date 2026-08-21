@@ -3,7 +3,7 @@
  * @module tests/tools/get-top-commodities.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTopCommoditiesTool } from '@/mcp-server/tools/definitions/get-top-commodities.tool.js';
 import {
@@ -125,7 +125,7 @@ describe('getTopCommoditiesTool', () => {
     });
     const result = await getTopCommoditiesTool.handler(input, ctx);
     expect(result.commodities).toHaveLength(0);
-    expect(result.notice).toBeDefined();
+    expect(getEnrichment(ctx).notice).toBeDefined();
   });
 
   it('formats output with reporterCode, flowCode, aggrLevel, and ranked commodities', () => {

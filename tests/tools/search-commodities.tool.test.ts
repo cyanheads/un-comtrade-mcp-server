@@ -3,7 +3,7 @@
  * @module tests/tools/search-commodities.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { searchCommoditiesTool } from '@/mcp-server/tools/definitions/search-commodities.tool.js';
 import {
@@ -110,7 +110,7 @@ describe('searchCommoditiesTool', () => {
     expect(result.totalMatches).toBe(0);
     expect(result.matches).toHaveLength(0);
     expect(result.truncated).toBe(false);
-    expect(result.notice).toContain('xyzzy_nonexistent_commodity');
+    expect(getEnrichment(ctx).notice).toContain('xyzzy_nonexistent_commodity');
   });
 
   it('applies limit and adds truncation notice', () => {
@@ -121,8 +121,8 @@ describe('searchCommoditiesTool', () => {
     expect(result.shown).toBeLessThanOrEqual(1);
     if (result.totalMatches > 1) {
       expect(result.truncated).toBe(true);
-      expect(result.notice).toBeDefined();
-      expect(result.notice).toContain('Showing');
+      expect(getEnrichment(ctx).notice).toBeDefined();
+      expect(getEnrichment(ctx).notice).toContain('Showing');
     }
   });
 

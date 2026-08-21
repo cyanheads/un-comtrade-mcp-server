@@ -76,8 +76,11 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     truncated: z
       .boolean()
       .describe('True when API returned 500 records and results may be incomplete.'),
-    notice: z.string().optional().describe('Recovery hint when no data is returned.'),
   }),
+
+  enrichment: {
+    notice: z.string().optional().describe('Recovery hint when no data is returned.'),
+  },
 
   errors: [
     {
@@ -119,10 +122,11 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     );
 
     if (result.records.length === 0) {
-      const notice =
+      ctx.enrich.notice(
         `No commodity data found for reporter ${input.reporter_code}, ` +
-        `flow=${input.flow_code}, period=${input.period}. ` +
-        `Use comtrade_get_data_availability to verify data exists.`;
+          `flow=${input.flow_code}, period=${input.period}. ` +
+          `Use comtrade_get_data_availability to verify data exists.`,
+      );
       return {
         commodities: [],
         reporterCode: input.reporter_code,
@@ -132,7 +136,6 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
         aggrLevel: input.aggr_level,
         totalCommodities: 0,
         truncated: false,
-        notice,
       };
     }
 
@@ -187,9 +190,6 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     ];
     if (result.truncated) {
       lines.push(`> **Note:** Results may be truncated at 500 records (preview endpoint limit).`);
-    }
-    if (result.notice) {
-      lines.push(`\n> ${result.notice}`);
     }
     for (const c of result.commodities) {
       lines.push(`\n**#${c.rank}. ${c.cmdCode}** (aggrLevel: ${c.aggrLevel}) — ${c.cmdDesc}`);

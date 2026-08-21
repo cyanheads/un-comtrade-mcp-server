@@ -3,7 +3,7 @@
  * @module tests/tools/list-service-categories.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { listServiceCategoriesTool } from '@/mcp-server/tools/definitions/list-service-categories.tool.js';
 import {
@@ -63,7 +63,7 @@ describe('listServiceCategoriesTool', () => {
     expect(result.shown).toBe(2);
     expect(result.totalMatches).toBe(5);
     expect(result.truncated).toBe(true);
-    expect(result.notice).toContain('Showing');
+    expect(getEnrichment(ctx).notice).toContain('Showing');
   });
 
   it('returns notice for no-match query', () => {
@@ -72,8 +72,8 @@ describe('listServiceCategoriesTool', () => {
     const result = listServiceCategoriesTool.handler(input, ctx);
     expect(result.totalMatches).toBe(0);
     expect(result.truncated).toBe(false);
-    expect(result.notice).toBeDefined();
-    expect(result.notice).toContain('zzz_nonexistent');
+    expect(getEnrichment(ctx).notice).toBeDefined();
+    expect(getEnrichment(ctx).notice).toContain('zzz_nonexistent');
   });
 
   it('returns notice when parent_code has no children', () => {
@@ -81,7 +81,7 @@ describe('listServiceCategoriesTool', () => {
     const input = listServiceCategoriesTool.input.parse({ parent_code: 'XYZ_MISSING' });
     const result = listServiceCategoriesTool.handler(input, ctx);
     expect(result.totalMatches).toBe(0);
-    expect(result.notice).toContain('XYZ_MISSING');
+    expect(getEnrichment(ctx).notice).toContain('XYZ_MISSING');
   });
 
   it('formats output with category IDs, descriptions, and parent codes', () => {

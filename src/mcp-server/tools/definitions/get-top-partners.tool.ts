@@ -70,8 +70,11 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
     truncated: z
       .boolean()
       .describe('True when API returned 500 records and results may be incomplete.'),
-    notice: z.string().optional().describe('Recovery hint when no data is returned.'),
   }),
+
+  enrichment: {
+    notice: z.string().optional().describe('Recovery hint when no data is returned.'),
+  },
 
   errors: [
     {
@@ -113,10 +116,11 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
     );
 
     if (result.records.length === 0) {
-      const notice =
+      ctx.enrich.notice(
         `No partner data found for reporter ${input.reporter_code}, ` +
-        `flow=${input.flow_code}, period=${input.period}. ` +
-        `Use comtrade_get_data_availability to verify data exists.`;
+          `flow=${input.flow_code}, period=${input.period}. ` +
+          `Use comtrade_get_data_availability to verify data exists.`,
+      );
       return {
         partners: [],
         reporterCode: input.reporter_code,
@@ -126,7 +130,6 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
         cmdCode,
         totalPartners: 0,
         truncated: false,
-        notice,
       };
     }
 
@@ -174,9 +177,6 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
     ];
     if (result.truncated) {
       lines.push(`> **Note:** Results may be truncated at 500 records (preview endpoint limit).`);
-    }
-    if (result.notice) {
-      lines.push(`\n> ${result.notice}`);
     }
     for (const p of result.partners) {
       lines.push(`\n**#${p.rank}. ${p.partnerDesc}** (code ${p.partnerCode})`);

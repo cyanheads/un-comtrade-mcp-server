@@ -65,8 +65,11 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
       )
       .describe('Available datasets matching the query.'),
     totalDatasets: z.number().describe('Total number of available dataset records.'),
-    notice: z.string().optional().describe('Recovery hint when no availability records are found.'),
   }),
+
+  enrichment: {
+    notice: z.string().optional().describe('Recovery hint when no availability records are found.'),
+  },
 
   errors: [
     {
@@ -96,15 +99,15 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
     );
 
     if (records.length === 0) {
-      const notice =
+      ctx.enrich.notice(
         `No data availability records found` +
-        (input.reporter_code ? ` for reporter ${input.reporter_code}` : '') +
-        (input.period ? `, period ${input.period}` : '') +
-        `. Try a different reporter, period, or classification.`;
+          (input.reporter_code ? ` for reporter ${input.reporter_code}` : '') +
+          (input.period ? `, period ${input.period}` : '') +
+          `. Try a different reporter, period, or classification.`,
+      );
       return {
         datasets: [],
         totalDatasets: 0,
-        notice,
       };
     }
 
@@ -125,9 +128,6 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
 
   format: (result) => {
     const lines = [`## Data Availability`, `**Datasets Found:** ${result.totalDatasets}`];
-    if (result.notice) {
-      lines.push(`\n> ${result.notice}`);
-    }
     for (const d of result.datasets) {
       lines.push(
         `\n**${d.reporterDesc}** (${d.reporterCode}) | ${d.period} | ${d.classificationCode} | freq:${d.freqCode} | typeCode:${d.typeCode}`,

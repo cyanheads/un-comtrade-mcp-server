@@ -66,8 +66,11 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     shown: z.number().describe('Number of records returned.'),
     truncated: z.boolean().describe('True when results were capped at 500 records.'),
     truncationHint: z.string().optional().describe('How to get full data when truncated.'),
-    notice: z.string().optional().describe('Recovery hint when no records are returned.'),
   }),
+
+  enrichment: {
+    notice: z.string().optional().describe('Recovery hint when no records are returned.'),
+  },
 
   errors: [
     {
@@ -110,16 +113,16 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     );
 
     if (result.records.length === 0) {
-      const notice =
+      ctx.enrich.notice(
         `No services trade records found for reporter ${input.reporter_code}, ` +
-        `flow=${input.flow_code}, periods=[${input.period.join(', ')}]. ` +
-        `Use comtrade_get_data_availability with type_code="S" to verify coverage.`;
+          `flow=${input.flow_code}, periods=[${input.period.join(', ')}]. ` +
+          `Use comtrade_get_data_availability with type_code="S" to verify coverage.`,
+      );
       return {
         records: [],
         totalCount: 0,
         shown: 0,
         truncated: false,
-        notice,
       };
     }
 
@@ -139,9 +142,6 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     ];
     if (result.truncated && result.truncationHint) {
       lines.push(`\n> **Truncated:** ${result.truncationHint}`);
-    }
-    if (result.notice) {
-      lines.push(`\n> ${result.notice}`);
     }
     for (const r of result.records) {
       lines.push(

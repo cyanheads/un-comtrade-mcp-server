@@ -186,7 +186,7 @@ export class ComtradeReferenceService {
         const url = `${REFERENCE_BASE}/${filename}`;
         const ctx = requestContextService.createRequestContext({
           operation: `ComtradeReferenceService.fetchJson`,
-          filename,
+          additionalContext: { filename },
         });
         const response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS, ctx, {});
         const text = await response.text();

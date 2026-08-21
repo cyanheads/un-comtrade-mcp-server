@@ -86,6 +86,9 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
     truncated: z
       .boolean()
       .describe('True when matches were capped at the limit (totalMatches exceeds shown).'),
+  }),
+
+  enrichment: {
     notice: z
       .string()
       .optional()
@@ -93,7 +96,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
         'Recovery hint when no matches are found or results are truncated. ' +
           'Absent when results are non-empty and not truncated.',
       ),
-  }),
+  },
 
   errors: [
     {
@@ -115,20 +118,27 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
     const results = ref.searchHsCodes(input.query, input.aggr_level);
 
     if (results.length === 0) {
+      ctx.enrich.notice(
+        `No HS commodity codes matched "${input.query}"` +
+          (input.aggr_level ? ` at aggr_level ${input.aggr_level}` : '') +
+          `. Try a different keyword, a shorter prefix, or remove the aggr_level filter.`,
+      );
       return {
         matches: [],
         totalMatches: 0,
         shown: 0,
         truncated: false,
-        notice:
-          `No HS commodity codes matched "${input.query}"` +
-          (input.aggr_level ? ` at aggr_level ${input.aggr_level}` : '') +
-          `. Try a different keyword, a shorter prefix, or remove the aggr_level filter.`,
       };
     }
 
     const total = results.length;
     const sliced = results.slice(0, input.limit);
+
+    if (total > sliced.length) {
+      ctx.enrich.notice(
+        `Showing ${sliced.length} of ${total} matches. Increase the limit parameter or narrow your query to see more results.`,
+      );
+    }
 
     return {
       matches: sliced.map((h) => ({
@@ -142,9 +152,6 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       totalMatches: total,
       shown: sliced.length,
       truncated: total > sliced.length,
-      ...(total > sliced.length && {
-        notice: `Showing ${sliced.length} of ${total} matches. Increase the limit parameter or narrow your query to see more results.`,
-      }),
     };
   },
 
@@ -153,9 +160,6 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       `## HS Commodity Code Search`,
       `**Matches:** ${result.totalMatches} | **Shown:** ${result.shown} | **Truncated:** ${result.truncated ? 'yes' : 'no'}`,
     ];
-    if (result.notice) {
-      lines.push(`\n> ${result.notice}`);
-    }
     for (const m of result.matches) {
       const levelLabel =
         m.aggrLevel === 2 ? 'Chapter' : m.aggrLevel === 4 ? 'Heading' : 'Subheading';

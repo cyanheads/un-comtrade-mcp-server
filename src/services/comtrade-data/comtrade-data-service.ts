@@ -67,8 +67,9 @@ export class ComtradeDataService {
 
     const raw = await withRetry(
       async () => {
-        const headers: Record<string, string> = hasKey
-          ? { 'Ocp-Apim-Subscription-Key': serverConfig.subscriptionKey! }
+        const { subscriptionKey } = serverConfig;
+        const headers: Record<string, string> = subscriptionKey
+          ? { 'Ocp-Apim-Subscription-Key': subscriptionKey }
           : {};
         const fetchCtx = requestContextService.createRequestContext({
           operation: 'ComtradeDataService.fetchTradeData',

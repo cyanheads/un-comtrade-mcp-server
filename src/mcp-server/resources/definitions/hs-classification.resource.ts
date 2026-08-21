@@ -4,7 +4,7 @@
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { validationError } from '@cyanheads/mcp-ts-core/errors';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 const VALID_LEVELS = [2, 4, 6] as const;
@@ -44,7 +44,7 @@ export const hsClassificationResource = resource('comtrade://hs-classification/{
   handler(params, ctx) {
     const levelNum = Number(params.level);
     if (!VALID_LEVELS.includes(levelNum as Level)) {
-      throw notFound(`Invalid HS level "${params.level}". Must be 2, 4, or 6.`, {
+      throw validationError(`Invalid HS level "${params.level}". Must be 2, 4, or 6.`, {
         requestedLevel: params.level,
       });
     }

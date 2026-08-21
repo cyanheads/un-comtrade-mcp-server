@@ -68,6 +68,9 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
       )
       .describe('Country/area entries matching the query, sorted by name.'),
     totalMatches: z.number().describe('Total number of matching entries.'),
+  }),
+
+  enrichment: {
     notice: z
       .string()
       .optional()
@@ -75,7 +78,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
         'Recovery hint when no matches are found — echoes the query and suggests alternatives. ' +
           'Absent when results are non-empty.',
       ),
-  }),
+  },
 
   errors: [
     {
@@ -100,12 +103,13 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
     results.sort((a, b) => a.name.localeCompare(b.name));
 
     if (results.length === 0) {
+      ctx.enrich.notice(
+        `No countries or areas matched "${input.query}" with role="${input.role}". ` +
+          `Try a shorter name fragment, check the spelling, or use an ISO code (e.g. "USA" or "US").`,
+      );
       return {
         matches: [],
         totalMatches: 0,
-        notice:
-          `No countries or areas matched "${input.query}" with role="${input.role}". ` +
-          `Try a shorter name fragment, check the spelling, or use an ISO code (e.g. "USA" or "US").`,
       };
     }
 
@@ -124,9 +128,6 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
 
   format: (result) => {
     const lines = [`## Country/Area Lookup`, `**Matches:** ${result.totalMatches}`];
-    if (result.notice) {
-      lines.push(`\n> ${result.notice}`);
-    }
     for (const c of result.matches) {
       const codes = [c.iso3 ? `ISO3: ${c.iso3}` : null, c.iso2 ? `ISO2: ${c.iso2}` : null]
         .filter(Boolean)

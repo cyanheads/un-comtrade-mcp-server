@@ -3,7 +3,7 @@
  * @module tests/tools/get-trade-flows.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTradeFlowsTool } from '@/mcp-server/tools/definitions/get-trade-flows.tool.js';
 import {
@@ -96,8 +96,8 @@ describe('getTradeFlowsTool', () => {
     });
     const result = await getTradeFlowsTool.handler(input, ctx);
     expect(result.records).toHaveLength(0);
-    expect(result.notice).toBeDefined();
-    expect(result.notice).toContain('999');
+    expect(getEnrichment(ctx).notice).toBeDefined();
+    expect(getEnrichment(ctx).notice).toContain('999');
   });
 
   it('propagates truncation flag and hint', async () => {

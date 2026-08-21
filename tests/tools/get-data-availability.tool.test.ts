@@ -3,7 +3,7 @@
  * @module tests/tools/get-data-availability.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDataAvailabilityTool } from '@/mcp-server/tools/definitions/get-data-availability.tool.js';
 import {
@@ -74,8 +74,8 @@ describe('getDataAvailabilityTool', () => {
     const result = await getDataAvailabilityTool.handler(input, ctx);
     expect(result.datasets).toHaveLength(0);
     expect(result.totalDatasets).toBe(0);
-    expect(result.notice).toBeDefined();
-    expect(result.notice).toContain('999');
+    expect(getEnrichment(ctx).notice).toBeDefined();
+    expect(getEnrichment(ctx).notice).toContain('999');
   });
 
   it('omits optional fields when absent in upstream response', async () => {
@@ -112,16 +112,5 @@ describe('getDataAvailabilityTool', () => {
     expect(text).toContain('C');
     expect(text).toContain('250,000');
     expect(text).toContain('2023-03-15');
-  });
-
-  it('formats notice when empty', () => {
-    const output = {
-      datasets: [],
-      totalDatasets: 0,
-      notice: 'No data availability records found for reporter 999.',
-    };
-    const blocks = getDataAvailabilityTool.format!(output);
-    const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('No data availability');
   });
 });

@@ -58,11 +58,14 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
     truncated: z
       .boolean()
       .describe('True when categories were capped at the limit (totalMatches exceeds shown).'),
+  }),
+
+  enrichment: {
     notice: z
       .string()
       .optional()
       .describe('Recovery hint when no results found or results are truncated.'),
-  }),
+  },
 
   handler(input, ctx) {
     ctx.log.info('comtrade_list_service_categories', {
@@ -81,21 +84,28 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
     }
 
     if (results.length === 0) {
+      ctx.enrich.notice(
+        `No EBOPS service categories matched` +
+          (input.query ? ` "${input.query}"` : '') +
+          (input.parent_code ? ` under parent "${input.parent_code}"` : '') +
+          `. Try a different keyword or remove the parent_code filter.`,
+      );
       return {
         categories: [],
         totalMatches: 0,
         shown: 0,
         truncated: false,
-        notice:
-          `No EBOPS service categories matched` +
-          (input.query ? ` "${input.query}"` : '') +
-          (input.parent_code ? ` under parent "${input.parent_code}"` : '') +
-          `. Try a different keyword or remove the parent_code filter.`,
       };
     }
 
     const total = results.length;
     const sliced = results.slice(0, input.limit);
+
+    if (total > sliced.length) {
+      ctx.enrich.notice(
+        `Showing ${sliced.length} of ${total} categories. Narrow your query or increase the limit.`,
+      );
+    }
 
     return {
       categories: sliced.map((e) => ({
@@ -106,9 +116,6 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
       totalMatches: total,
       shown: sliced.length,
       truncated: total > sliced.length,
-      ...(total > sliced.length && {
-        notice: `Showing ${sliced.length} of ${total} categories. Narrow your query or increase the limit.`,
-      }),
     };
   },
 
@@ -117,9 +124,6 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
       `## EBOPS 2010 Service Categories`,
       `**Matches:** ${result.totalMatches} | **Shown:** ${result.shown} | **Truncated:** ${result.truncated ? 'yes' : 'no'}`,
     ];
-    if (result.notice) {
-      lines.push(`\n> ${result.notice}`);
-    }
     for (const c of result.categories) {
       lines.push(`\n**${c.id}** — ${c.description}`);
       if (c.parent) lines.push(`  Parent: ${c.parent}`);
