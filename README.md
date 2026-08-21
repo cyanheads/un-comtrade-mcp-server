@@ -9,7 +9,7 @@
 
 
 
-[![Version](https://img.shields.io/badge/Version-0.1.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/un-comtrade-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/un-comtrade-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/un-comtrade-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/un-comtrade-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/un-comtrade-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/un-comtrade-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -214,7 +214,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 COMTRADE_SUBSCRIPTION_KEY=... bun run
 
 ### Prerequisites
 
-- [Bun v1.3.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.3.0](https://bun.sh/) or higher (or Node.js v24+). Development and Docker images use Bun 1.4.0.
 - Optional: a [UN Comtrade subscription key](https://comtradedeveloper.un.org/) for full API access. Without one, all tools fall back to the public preview endpoint (500 records/call). Reference/lookup tools (`comtrade_lookup_countries`, `comtrade_search_commodities`, `comtrade_list_service_categories`) never require a key — they query static UN reference files.
 
 ### Installation

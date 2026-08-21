@@ -1,0 +1,25 @@
+{
+  "name": "un-comtrade-mcp-server",
+  "version": "0.1.5",
+  "description": "Access UN Comtrade international merchandise and services trade statistics — country lookups, HS commodity search, bilateral trade flows, balances, rankings, and data availability — via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/un-comtrade-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/un-comtrade-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "trade", "comtrade", "united-nations", "international-trade", "hs-codes"],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "un-comtrade-mcp-server",
+    "shortDescription": "UN Comtrade trade statistics via MCP — country/HS lookups, bilateral flows, balances, rankings.",
+    "longDescription": "MCP server wrapping the UN Comtrade API for international merchandise and services trade statistics. Resolve country names to M49 codes, search HS commodity codes by keyword, fetch bilateral trade flow records with values in USD, compute trade balances with coverage ratios, rank top trading partners and commodities, check data availability before querying, and browse EBOPS 2010 service trade categories. Works on the free public preview endpoint (500 records/call) or with a subscription key for full access. Runs over STDIO or Streamable HTTP.",
+    "developerName": "cyanheads",
+    "category": "data",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/un-comtrade-mcp-server",
+    "defaultPrompt": []
+  }
+}

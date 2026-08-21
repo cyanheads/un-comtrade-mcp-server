@@ -2,9 +2,9 @@
 
 **Server:** un-comtrade-mcp-server
 **Version:** 0.1.5
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.10.6`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.12.3`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
+**MCP SDK:** `@modelcontextprotocol/server` ^2.0.0
 **Zod:** ^4.4.3
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -35,9 +35,9 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 - **Logic throws, framework catches.** Tool/resource handlers are pure — throw on failure, no `try/catch`. Plain `Error` is fine; the framework catches, classifies, and formats. Use error factories (`notFound()`, `validationError()`, etc.) when the error code matters.
 - **Use `ctx.log`** for request-scoped logging. No `console` calls.
 - **Use `ctx.state`** for tenant-scoped storage. Never access persistence directly.
-- **Check `ctx.elicit`** for presence before calling.
+- **Need input the caller didn't supply?** `return ctx.requestInput(...)` and read `ctx.inputs` when the handler is re-entered. Never `await` for user input mid-handler.
 - **Secrets in env vars only** — never hardcoded.
-- **Close the loop on issues.** When implementing work tracked by a GitHub issue, comment on the issue with what landed before moving on. The comment is for future readers — state the concrete changes, not the conversation that produced them.
+- **Close the loop on issues.** When implementing work tracked by a GitHub issue, comment on the issue with what landed and close it. Do both — a comment without a close leaves stale issues open; a close without a comment leaves no record of what shipped. The comment is for future readers — state the concrete changes, not the conversation that produced them.
 
 ---
 
@@ -91,7 +91,7 @@ export const itemData = resource('inventory://{itemId}', {
   params: z.object({ itemId: z.string().describe('Item identifier') }),
   auth: ['inventory:read'],
   async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
+    const item = await ctx.state.get(`item/${params.itemId}`);
     if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
     return item;
   },
@@ -125,6 +125,7 @@ import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 const ServerConfigSchema = z.object({
   apiKey: z.string().describe('External API key'),
   maxResults: z.coerce.number().default(100),
+  verboseLogging: z.stringbool().default(false).describe('Enable verbose logging'),
 });
 
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
@@ -132,12 +133,15 @@ export function getServerConfig() {
   _config ??= parseEnvConfig(ServerConfigSchema, {
     apiKey: 'MY_API_KEY',
     maxResults: 'MY_MAX_RESULTS',
+    verboseLogging: 'MY_VERBOSE_LOGGING',
   });
   return _config;
 }
 ```
 
 `parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
+
+For env booleans use `z.stringbool()`, never `z.coerce.boolean()` — `Boolean("false")` is `true`, so a coerced flag can't be disabled through the environment. `z.stringbool()` parses `true/false/1/0/yes/no/on/off` and rejects anything else, so `=false` actually disables.
 
 ---
 
@@ -147,13 +151,15 @@ Handlers receive a unified `ctx` object. Key properties:
 
 | Property | Description |
 |:---------|:------------|
-| `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. |
-| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. |
-| `ctx.elicit` | Ask user for structured input — form call `(message, schema)` or `.url(message, url)` for an external link. **Check for presence first:** `if (ctx.elicit) { ... }` |
+| `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. Dual-sink: Pino **and** `notifications/message` to the client, so treat it as client-visible. |
+| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.getMany(keys)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. |
+| `ctx.requestInput` | Suspend and ask the caller for more input — `return ctx.requestInput({ inputRequests: { key: inputRequired.elicit({ message, requestedSchema }) } })`. Never returns; the handler is re-entered with the answers. Always present. |
+| `ctx.inputs` | Reader over a retried request's responses — `.accepted(key, schema)`, `.view(key)`, `.state()`, `.dropped`. Empty on the first round. |
+| `ctx.enrich` | Success-path agent context (empty-result notices, query echo, pagination totals) — `ctx.enrich(...)` or `.notice()` / `.total()` / `.echo()` / `.truncated()`. Reaches `structuredContent` and `content[]`; lands only when the definition declares an `enrichment` block (no-op otherwise). |
+| `ctx.content` | Non-text content blocks — `.image(data, mimeType)`, `.audio(data, mimeType)`, or `ctx.content(block)` for a raw block. Prepended to `content[]` after `format()`; never enters `structuredContent`. |
 | `ctx.signal` | `AbortSignal` for cancellation. |
-| `ctx.progress` | Task progress (present when `task: true`) — `.setTotal(n)`, `.increment()`, `.update(message)`. |
 | `ctx.requestId` | Unique request ID. |
-| `ctx.tenantId` | Tenant ID from JWT or `'default'` for stdio. |
+| `ctx.tenantId` | Tenant ID from JWT; `'default'` for stdio or HTTP with auth off. |
 
 ---
 
@@ -161,9 +167,11 @@ Handlers receive a unified `ctx` object. Key properties:
 
 Handlers throw — the framework catches, classifies, and formats.
 
-**Recommended: typed error contract.** Declare `errors: [{ reason, code, when, recovery, retryable? }]` on `tool()` / `resource()` to receive `ctx.fail(reason, …)` typed against the reason union. TypeScript catches typos at compile time, `data.reason` is auto-populated for observability, linter enforces conformance against the handler body. `recovery` is required descriptive metadata for the agent's next move (≥ 5 words, lint-validated); for the wire `data.recovery.hint` (mirrored into `content[]` text), pass explicitly at the throw site when dynamic context matters: `ctx.fail('reason', msg, { recovery: { hint: '...' } })`. Baseline codes (`InternalError`, `ServiceUnavailable`, `Timeout`, `ValidationError`, `SerializationError`) bubble freely and don't need declaring.
+**Recommended: typed error contract.** Declare `errors: [{ reason, code, when, recovery, retryable? }]` on `tool()` / `resource()` to receive `ctx.fail(reason, …)` typed against the reason union. TypeScript catches typos at compile time, `data.reason` is auto-populated for observability, linter enforces conformance against the handler body. `recovery` is required (≥ 5 words, lint-validated) — the single source of truth for the agent's next move. Pass `ctx.recoveryFor('reason')` as the throw's data to put it on the wire (`data.recovery.hint`, mirrored into `content[]` text); override with an explicit `{ recovery: { hint: '...' } }` when dynamic runtime context matters. Baseline codes (`InternalError`, `ServiceUnavailable`, `Timeout`, `ValidationError`, `SerializationError`) bubble freely and don't need declaring.
 
 ```ts
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+
 errors: [
   { reason: 'no_match', code: JsonRpcErrorCode.NotFound,
     when: 'No item matched the query',
@@ -171,7 +179,7 @@ errors: [
 ],
 async handler(input, ctx) {
   const item = await db.find(input.id);
-  if (!item) throw ctx.fail('no_match', `No item ${input.id}`);
+  if (!item) throw ctx.fail('no_match', `No item ${input.id}`, ctx.recoveryFor('no_match'));
   return item;
 }
 ```
@@ -234,7 +242,7 @@ src/
 
 ## Skills
 
-Skills are modular instructions in `skills/` at the project root. Read them directly when a task matches — e.g., `skills/add-tool/SKILL.md` when adding a tool.
+Skills are modular instructions in `skills/` at the project root. Read them directly when a task matches — e.g., `skills/add-tool/SKILL.md` when adding a tool. `bun run list-skills` prints the full registry.
 
 **Agent skill directory:** Copy skills into the directory your agent discovers (Claude Code: `.claude/skills/`, others: equivalent). Skills then load as context without referencing `skills/` paths. After framework updates, run the `maintenance` skill — Phase B re-syncs the agent directory.
 
@@ -251,22 +259,31 @@ Available skills:
 | `add-service` | Scaffold a new service integration |
 | `add-test` | Scaffold test file for a tool, resource, or service |
 | `field-test` | Exercise tools/resources/prompts with real inputs, verify behavior, report issues |
+| `tool-defs-analysis` | Read-only audit of MCP definition language across the surface — voice, leaks, defaults, recovery hints, output descriptions |
 | `security-pass` | Audit server for MCP-flavored security gaps: output injection, scope blast radius, input sinks, tenant isolation |
-| `devcheck` | Lint, format, typecheck, audit |
+| `code-simplifier` | Post-session cleanup against `git diff` — modernize syntax, consolidate duplication, align with the codebase |
 | `polish-docs-meta` | Finalize docs, README, metadata, and agent protocol for shipping |
+| `git-wrapup` | Land working-tree changes as a versioned commit + annotated tag — version bump, changelog, verify, tag. Local only. |
+| `release-and-publish` | Push + npm + MCP Registry + GH Release + Docker. Picks up from `git-wrapup` |
 | `maintenance` | Investigate changelogs, adopt upstream changes, sync skills to agent dirs |
+| `orchestrations` | Chain task skills into a gated multi-phase pipeline — build-out, QA-fix, update-ship — when you can spawn sub-agents |
 | `report-issue-framework` | File a bug or feature request against `@cyanheads/mcp-ts-core` via `gh` CLI |
 | `report-issue-local` | File a bug or feature request against this server's own repo via `gh` CLI |
+| `techniques` | Catalog of response/data-shaping techniques — overflow handling, payload shaping, retrieval patterns |
 | `api-auth` | Auth modes, scopes, JWT/OAuth |
 | `api-canvas` | DataCanvas: register tabular data, run SQL, export, plus the `spillover()` helper for big result sets — Tier 3 opt-in |
 | `api-config` | AppConfig, parseConfig, env vars |
-| `api-context` | Context interface, logger, state, progress |
+| `api-context` | Context interface, RequestContext, logger, state, multi-round-trip input |
 | `api-errors` | McpError, JsonRpcErrorCode, error patterns |
+| `api-linter` | Definition linter rule catalog — invoked by `bun run lint:mcp` and `devcheck` |
+| `api-mirror` | MirrorService: persistent self-refreshing local mirror (embedded SQLite + FTS5) of a bulk upstream dataset — Tier 3 opt-in |
 | `api-services` | LLM, Speech, Graph services |
 | `api-testing` | createMockContext, test patterns |
 | `api-utils` | Formatting, parsing, security, pagination, scheduling, telemetry helpers |
 | `api-telemetry` | OTel catalog: spans, metrics, completion logs, env config, cardinality rules |
 | `api-workers` | Cloudflare Workers runtime |
+
+**Chaining skills into pipelines.** When the user wants a multi-phase effort — build this server out, QA-and-fix the surface, update-and-ship — *and you can spawn sub-agents*, `skills/orchestrations/SKILL.md` sequences the task skills above into a gated pipeline with verification at each step. Read it to drive the run. Optional: skip it if you can't orchestrate sub-agents, and ignore it entirely if you were *spawned* as one — you've already been scoped to a single phase.
 
 When you complete a skill's checklist, check the boxes and add a completion timestamp at the end (e.g., `Completed: 2026-03-11`).
 
@@ -274,66 +291,38 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 ## Commands
 
-**Runtime:** Scripts use `tsx` — both `npm run <cmd>` and `bun run <cmd>` work. `bun` is slightly faster for script invocation but not required.
+**Runtime:** Scripts use Bun's native TypeScript execution — `bun run <cmd>` is the standard invocation. `npm run <cmd>` also works (npm delegates to bun).
 
 | Command | Purpose |
 |:--------|:--------|
-| `npm run build` | Compile TypeScript |
-| `npm run rebuild` | Clean + build |
-| `npm run clean` | Remove build artifacts |
-| `npm run devcheck` | Lint + format + typecheck + security + changelog sync |
-| `bun run audit:refresh` | Delete `bun.lock`, reinstall, re-audit. Use when `devcheck` flags a transitive advisory — stale lockfile can mask already-patched deps. If advisory survives, it's real. |
-| `npm run tree` | Generate directory structure doc |
-| `npm run format` | Auto-fix formatting |
-| `npm test` | Run tests |
-| `npm run start:stdio` | Production mode (stdio) |
-| `npm run start:http` | Production mode (HTTP) |
-| `npm run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
-| `npm run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
-| `npm run bundle` | Build and pack as `.mcpb` for one-click Claude Desktop install |
+| `bun run build` | Compile TypeScript |
+| `bun run rebuild` | Clean + build |
+| `bun run clean` | Remove build artifacts |
+| `bun run devcheck` | Lint + format + typecheck + security + changelog sync |
+| `bun run audit:refresh` | Delete `bun.lock`, reinstall, and re-run `bun audit`. Use when `devcheck` flags a transitive advisory — Bun's `update` is sticky on transitive resolutions, so the advisory may be a stale-lockfile false positive. If it survives the refresh, it's real. |
+| `bun run lint:mcp` | Run the MCP definition linter standalone (rule catalog: `api-linter` skill) |
+| `bun run lint:packaging` | Packaging surface checks — `server.json`/`manifest.json` env-var parity (run by devcheck) |
+| `bun run list-skills` | Print the skill registry |
+| `bun run tree` | Generate directory structure doc |
+| `bun run format` | Auto-fix formatting (safe fixes only) |
+| `bun run format:unsafe` | Also apply Biome's unsafe autofixes — review the diff; they can change behavior |
+| `bun run test` | Run tests (Vitest — use `bun run test`, not `bun test`) |
+| `bun run start:stdio` | Production mode (stdio) |
+| `bun run start:http` | Production mode (HTTP) |
+| `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
+| `bun run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
+| `bun run bundle` | Build, pack, and clean a `.mcpb` for one-click Claude Desktop install |
+| `bun run release:github` | Publish the GitHub release for the current tag |
 
 ---
 
 ## Bundling
 
-`npm run bundle` produces a `.mcpb` extension bundle for one-click install in Claude Desktop. MCPB is stdio-only — HTTP and Cloudflare Workers deployments are unaffected. Consumers who don't need it can delete `manifest.json` and `.mcpbignore`; `lint:packaging` skips cleanly.
+`npm run bundle` produces a `.mcpb` extension bundle for one-click install in Claude Desktop. The pack step is followed by `scripts/clean-mcpb.ts`, which prunes dev dependencies (`mcpb clean`) and strips two classes of `node_modules/**` content that root-anchored `.mcpbignore` patterns cannot reach: dependency-shipped agent docs (`skills/`, `.claude/`, `.agents/`, `SKILL.md`) and platform-specific native bindings, which would otherwise lock the bundle to the platform it was packed on. MCPB is stdio-only — HTTP and Cloudflare Workers deployments are unaffected. Consumers who don't need it can delete `manifest.json` and `.mcpbignore`; `lint:packaging` skips cleanly.
 
 **Adding an env var requires both files:** `server.json` (registry discovery, `environmentVariables[]`) and `manifest.json` (bundle install UX, `mcp_config.env` + `user_config`). `lint:packaging` (run by `devcheck`) verifies the env var names match.
 
-**README install badges.** Drop these into the project README to give users one-click install paths. Fill in `<OWNER>` / `<REPO>` / `<PACKAGE_NAME>` and encode the per-server config. Cursor + VS Code badges assume the server is published to npm; Claude Desktop downloads the `.mcpb` directly so npm publishing isn't required.
-
-| Client | Mechanism |
-|:-------|:----------|
-| Claude Desktop | Browser downloads the `.mcpb` from the latest GitHub Release; OS file handler routes it to Claude Desktop, which opens the install dialog. No deep-link URL scheme yet — this is the canonical path. |
-| Cursor | Official `https://cursor.com/en/install-mcp` endpoint with base64 JSON config. |
-| VS Code / Insiders | Official `vscode:mcp/install?...` deep link, wrapped in `https://vscode.dev/redirect?url=` so GitHub-rendered markdown doesn't strip the non-HTTP scheme. |
-| Claude Code / Codex | CLI only (`claude mcp add` / `codex mcp add`); no URL scheme. |
-
-```markdown
-[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/<OWNER>/<REPO>/releases/latest/download/<PACKAGE_NAME>.mcpb)
-[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=<PACKAGE_NAME>&config=<BASE64_CONFIG>)
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?<URLENCODED_JSON>)
-```
-
-Both install links route through HTTPS endpoints (`cursor.com/en/install-mcp` and `vscode.dev/redirect`) — GitHub-rendered markdown strips non-HTTP URL schemes from anchors, so a raw `cursor://` or `vscode:` link won't click through from github.com.
-
-Generate the encoded configs (replace `<PACKAGE_NAME>` and add env vars for any required API keys):
-
-```bash
-# Cursor: base64-encoded JSON. Split command/args, add env when keys are needed.
-echo -n '{"command":"npx","args":["-y","<PACKAGE_NAME>"],"env":{"API_KEY":"your-api-key"}}' | base64
-# Without env (no required keys):
-echo -n '{"command":"npx","args":["-y","<PACKAGE_NAME>"]}' | base64
-
-# VS Code: URL-encoded JSON. Same shape plus a `name` field.
-node -p 'encodeURIComponent(JSON.stringify({name:"<SHORT_NAME>",command:"npx",args:["-y","<PACKAGE_NAME>"],env:{API_KEY:"your-api-key"}}))'
-# Without env:
-node -p 'encodeURIComponent(JSON.stringify({name:"<SHORT_NAME>",command:"npx",args:["-y","<PACKAGE_NAME>"]}))'
-```
-
-Both clients use the same `{command, args, env}` shape (matching `mcp.json` schema). VS Code adds a top-level `name` field. Omit `env` entirely when no API keys are needed — don't include empty objects or framework-only vars like `MCP_TRANSPORT_TYPE`.
-
-The Claude Desktop badge requires the bundle to ship with a stable filename — `bun run bundle` outputs `dist/<PACKAGE_NAME>.mcpb`, and `release-and-publish` attaches that file to the GitHub Release. `releases/latest/download/<PACKAGE_NAME>.mcpb` then redirects to the most recent release.
+**README install badges** (Claude Desktop `.mcpb`, Cursor, VS Code) and the `base64` / `encodeURIComponent` config-generation commands are ship-time concerns — run the `polish-docs-meta` skill, which carries the badge format, layout, and generation snippets in `skills/polish-docs-meta/references/readme.md`.
 
 ---
 
@@ -347,14 +336,16 @@ Each per-version file opens with YAML frontmatter:
 ---
 summary: "One-line headline, ≤350 chars"  # required — powers the rollup index
 breaking: false                            # optional — true flags breaking changes
-security: false                            # optional — true flags security fixes
+security: false                            # optional — true ONLY for a source-code security fix, never a dependency CVE bump
 ---
 
 # 0.1.0 — YYYY-MM-DD
 ...
 ```
 
-`breaking: true` renders a `· ⚠️ Breaking` badge — use it when consumers must update code on upgrade (signature changes, removed APIs, config renames). `security: true` renders a `· 🛡️ Security` badge and pairs with a `## Security` body section. When both are set, badges render `· ⚠️ Breaking · 🛡️ Security`.
+`breaking: true` renders a `· ⚠️ Breaking` badge — use it when consumers must update code on upgrade (signature changes, removed APIs, config renames). `security: true` renders a `· 🛡️ Security` badge and pairs with a `## Security` body section — set it only for a security fix in this server's *own source code*, never for a routine dependency or transitive CVE bump (record those under `## Dependencies`). When both are set, badges render `· ⚠️ Breaking · 🛡️ Security`.
+
+`agent-notes` is an optional free-form field for maintenance agents processing the release downstream. Content here won't appear in the rendered CHANGELOG — it's consumed by agents running the `maintenance` skill. Use it for adoption instructions that don't fit the human-facing sections: new files to create, fields to populate, one-time migration steps. Omit entirely when there's nothing to say.
 
 **Section order** (Keep a Changelog): Added, Changed, Deprecated, Removed, Fixed, Security. Include only sections with entries — don't ship empty headers.
 
@@ -388,4 +379,7 @@ import { getMyService } from '@/services/my-domain/my-service.js';
 - [ ] If wrapping external API: tests include at least one sparse payload case with omitted upstream fields
 - [ ] Registered in `createApp()` arrays (directly or via barrel exports)
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
+- [ ] `.codex-plugin/plugin.json` populated — `name`, `version`, `description`, `repository`, `license` from `package.json`; `interface.displayName` = package name; `interface.shortDescription` from `package.json` description
+- [ ] `.codex-plugin/mcp.json` updated — server name key matches `package.json` name; env vars added for any required API keys
+- [ ] `.claude-plugin/plugin.json` populated — `name`, `version`, `description`, `repository`, `license` from `package.json`; inline `mcpServers` entry with server name key, env vars for any required API keys
 - [ ] `npm run devcheck` passes
