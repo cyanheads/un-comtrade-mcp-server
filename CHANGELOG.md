@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-08-21
+
+Framework adoption ^0.10.6 → ^0.12.3: MCP SDK v2 baseline with strict tool inputs and a declared error envelope; empty-result notices move to ctx.enrich across all eight tools; Bun 1.4 pins and a supply-chain install guard
+
 ## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-06-12
 
 Adopt @cyanheads/mcp-ts-core ^0.10.6, add truncated flag to search tools, explicit display identity

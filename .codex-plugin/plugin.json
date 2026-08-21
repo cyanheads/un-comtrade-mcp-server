@@ -1,6 +1,6 @@
 {
   "name": "un-comtrade-mcp-server",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Access UN Comtrade international merchandise and services trade statistics — country lookups, HS commodity search, bilateral trade flows, balances, rankings, and data availability — via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
