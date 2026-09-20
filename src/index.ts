@@ -24,6 +24,15 @@ import { initComtradeReferenceService } from './services/comtrade-reference/comt
 await createApp({
   name: 'un-comtrade-mcp-server',
   title: 'un-comtrade-mcp-server',
+  /**
+   * Every tool is a single-round read of the UN Comtrade API or of reference data held in
+   * memory — nothing calls `ctx.requestInput`, so no handler needs a session to come back to.
+   * Declared here rather than left to `MCP_SESSION_MODE` alone so the posture travels with the
+   * code to any deployment that does not set the variable; where it is set (Dockerfile,
+   * `.env.example`) it still wins, and the schema default of `auto` — which resolves to
+   * `stateful` — is no longer what an unconfigured host falls back to.
+   */
+  sessionMode: 'stateless',
   tools: [
     lookupCountriesTool,
     searchCommoditiesTool,
@@ -55,15 +64,9 @@ await createApp({
     initComtradeDataService(core.config, core.storage);
     initComtradeMetaService(core.config, core.storage);
 
-    const countryCount = refService.getAllCountries().length;
-    const hsCount = refService.getAllHsCodes().length;
-    // Defer: logger.initialize() runs after setup() returns, so any log emitted here is
-    // silently dropped. setImmediate schedules after the current event-loop tick, by which
-    // point the framework has completed initialization and the logger is live.
-    setImmediate(() => {
-      core.logger.info(
-        `Comtrade reference data loaded. countries=${countryCount} hsCodes=${hsCount}`,
-      );
-    });
+    core.logger.info(
+      `Comtrade reference data loaded. countries=${refService.getAllCountries().length} ` +
+        `hsCodes=${refService.getAllHsCodes().length}`,
+    );
   },
 });
