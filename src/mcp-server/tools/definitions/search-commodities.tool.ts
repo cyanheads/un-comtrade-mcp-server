@@ -4,7 +4,6 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 /** Valid HS classification versions. */
@@ -97,16 +96,6 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
           'Absent when results are non-empty and not truncated.',
       ),
   },
-
-  errors: [
-    {
-      reason: 'no_match',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'No HS commodity codes matched the query.',
-      recovery:
-        'Try a broader keyword, remove filters, or look up a known HS code prefix (e.g. "84" for machinery).',
-    },
-  ],
 
   handler(input, ctx) {
     ctx.log.info('comtrade_search_commodities', {

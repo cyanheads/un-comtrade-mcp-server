@@ -4,7 +4,6 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 
 export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
@@ -81,24 +80,6 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
   enrichment: {
     notice: z.string().optional().describe('Recovery hint when no data is returned.'),
   },
-
-  errors: [
-    {
-      reason: 'no_data',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'No commodity breakdown data returned for the given parameters.',
-      recovery:
-        'Verify the reporter code and period. Use comtrade_get_data_availability to confirm ' +
-        'data is published, then retry.',
-    },
-    {
-      reason: 'api_error',
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The Comtrade API was unreachable or returned an error.',
-      recovery:
-        'Check network connectivity and COMTRADE_SUBSCRIPTION_KEY if set, then retry after a brief delay.',
-    },
-  ],
 
   async handler(input, ctx) {
     ctx.log.info('comtrade_get_top_commodities', {

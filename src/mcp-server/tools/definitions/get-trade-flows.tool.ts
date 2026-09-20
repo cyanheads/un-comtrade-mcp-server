@@ -4,7 +4,6 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 
 const TradeFlowRecordSchema = z.object({
@@ -112,24 +111,6 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       .optional()
       .describe('Recovery hint when no records are returned. Absent on successful responses.'),
   },
-
-  errors: [
-    {
-      reason: 'no_data',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'The API returned no trade flow records for the given parameters.',
-      recovery:
-        'Verify the reporter code, period, and flow direction. ' +
-        'Use comtrade_get_data_availability to check which periods have published data.',
-    },
-    {
-      reason: 'api_error',
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The Comtrade API returned an error or was unreachable.',
-      recovery:
-        'Check your COMTRADE_SUBSCRIPTION_KEY if set, verify network access, and retry after a brief delay.',
-    },
-  ],
 
   async handler(input, ctx) {
     ctx.log.info('comtrade_get_trade_flows', {

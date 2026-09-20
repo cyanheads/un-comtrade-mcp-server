@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTradeBalanceTool } from '@/mcp-server/tools/definitions/get-trade-balance.tool.js';
 import {
@@ -114,6 +114,36 @@ describe('getTradeBalanceTool', () => {
       code: JsonRpcErrorCode.NotFound,
       data: { reason: 'no_data' },
     });
+  });
+
+  it('advertises only the reasons a code path can produce', () => {
+    expect(getTradeBalanceTool.errors?.map((e) => e.reason)).toEqual(['no_data']);
+  });
+
+  it('carries the declared no_data recovery hint on both consumption surfaces', async () => {
+    fetchMock.mockResolvedValue({ records: [], totalCount: 0, truncated: false });
+    const declaredHint = getTradeBalanceTool.errors?.find((e) => e.reason === 'no_data')?.recovery;
+
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 999,
+      period: ['1900'],
+    });
+
+    expect(result.isError).toBe(true);
+    // structuredContent — what Claude Code reads
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.NotFound,
+        data: { reason: 'no_data', recovery: { hint: declaredHint } },
+      },
+    });
+    // content[] — what Claude Desktop reads
+    const block = result.content?.[0];
+    expect(block).toMatchObject({ type: 'text' });
+    const text = (block as { text: string }).text;
+    expect(text).toContain('No trade data found for reporter 999');
+    expect(text).toContain(declaredHint);
+    expect(text).toContain('reason no_data');
   });
 
   it('adds note when only export data exists', async () => {

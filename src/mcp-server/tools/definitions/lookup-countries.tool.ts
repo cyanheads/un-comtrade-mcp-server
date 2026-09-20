@@ -4,7 +4,6 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 export const lookupCountriesTool = tool('comtrade_lookup_countries', {
@@ -79,16 +78,6 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
           'Absent when results are non-empty.',
       ),
   },
-
-  errors: [
-    {
-      reason: 'no_match',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'No country or area matched the query string.',
-      recovery:
-        'Try a shorter name fragment, check spelling, or use an ISO alpha-2/alpha-3 code instead.',
-    },
-  ],
 
   handler(input, ctx) {
     ctx.log.info('comtrade_lookup_countries', { query: input.query, role: input.role });

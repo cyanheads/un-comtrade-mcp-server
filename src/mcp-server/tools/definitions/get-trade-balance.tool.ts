@@ -95,13 +95,6 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
         'Use comtrade_get_data_availability to verify which periods have published data, ' +
         'then retry with a confirmed available period.',
     },
-    {
-      reason: 'api_error',
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The Comtrade API returned an error or was unreachable.',
-      recovery:
-        'Check COMTRADE_SUBSCRIPTION_KEY if set, verify network connectivity, and retry after a brief delay.',
-    },
   ],
 
   async handler(input, ctx) {
@@ -183,11 +176,7 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       throw ctx.fail(
         'no_data',
         `No trade data found for reporter ${input.reporter_code}, periods [${input.period.join(', ')}]`,
-        {
-          recovery: {
-            hint: 'Use comtrade_get_data_availability to check which periods have published data.',
-          },
-        },
+        ctx.recoveryFor('no_data'),
       );
     }
 

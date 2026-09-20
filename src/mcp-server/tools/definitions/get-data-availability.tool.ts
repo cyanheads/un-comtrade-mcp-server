@@ -4,7 +4,6 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getComtradeMetaService } from '@/services/comtrade-meta/comtrade-meta-service.js';
 
 export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
@@ -70,15 +69,6 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
   enrichment: {
     notice: z.string().optional().describe('Recovery hint when no availability records are found.'),
   },
-
-  errors: [
-    {
-      reason: 'api_error',
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The Comtrade availability endpoint was unreachable or returned an error.',
-      recovery: 'Verify network connectivity and retry after a brief delay.',
-    },
-  ],
 
   async handler(input, ctx) {
     ctx.log.info('comtrade_get_data_availability', {
