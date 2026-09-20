@@ -21,147 +21,147 @@
 
 </div>
 
-> **Note:** The UN Comtrade license agreement (§5) prohibits redistributing data without prior written UN permission. Connect with your own Comtrade subscription key.
-
 ---
 
-## Tools
+## Overview
 
-9 tools covering the full UN Comtrade workflow — reference resolution, trade data retrieval, aggregated rankings, and coverage checking:
+International merchandise and services trade statistics from UN Comtrade. Resolve country and HS commodity codes, fetch bilateral trade flows and services trade, and compute balances, partner/commodity rankings, and data availability from any MCP client. Runs as a stdio process or a local Streamable HTTP server.
+
+### Tools
 
 | Tool | Description |
 |:-----|:------------|
-| `comtrade_lookup_countries` | Resolve country and area names to Comtrade M49 numeric codes. Accepts partial names or ISO alpha-2/alpha-3 codes. Returns matching entries with `validAsReporter` flag — regional groupings are valid partner codes but not reporter codes. |
-| `comtrade_search_commodities` | Find HS commodity codes by keyword, partial description, or code prefix. Returns codes at 2-, 4-, or 6-digit aggregation with descriptions, parent code, leaf status, and a `recommended_query_code` field. |
-| `comtrade_list_service_categories` | List EBOPS 2010 service trade categories — the services-domain equivalent of `comtrade_search_commodities`. Returns codes, descriptions, and parent codes. Filter by keyword or browse from a parent code. |
-| `comtrade_get_trade_flows` | Fetch bilateral trade flow records. Returns `primaryValue` (USD, FOB for exports / CIF for imports), quantity, net weight, and period/commodity/partner metadata per row. Accepts multiple periods and commodity codes in one call. |
-| `comtrade_get_trade_balance` | Compute trade balance (exports minus imports) for a country over one or more periods with optional commodity filter. Fetches export and import totals in parallel; returns signed balance, component values, and coverage ratio. |
-| `comtrade_get_top_partners` | Rank trading partners for a reporter by trade value for a given commodity and flow direction. Returns top N partners sorted by descending value for a single period. |
-| `comtrade_get_top_commodities` | Rank commodity categories for a reporter by trade value for a given flow direction and period. Returns top N HS chapters (2-digit) or headings (4-digit) sorted by descending value. |
-| `comtrade_get_services_trade` | Fetch international trade-in-services data (EBOPS 2010). Same bilateral structure as goods trade: returns flow value, period, and reporter/partner/category metadata. |
-| `comtrade_get_data_availability` | Check which reporter/period/classification combinations have published data before constructing expensive queries. Returns record count and publication date per dataset. |
+| `comtrade_lookup_countries` | Resolve country and area names to Comtrade M49 numeric codes. |
+| `comtrade_search_commodities` | Find HS commodity codes by keyword, description, or code prefix. |
+| `comtrade_list_service_categories` | List EBOPS 2010 service trade categories by keyword or parent code. |
+| `comtrade_get_trade_flows` | Fetch bilateral trade flow records — value, quantity, and weight per period/commodity/partner. |
+| `comtrade_get_trade_balance` | Compute a country's trade balance (exports minus imports) across one or more periods. |
+| `comtrade_get_top_partners` | Rank trading partners by trade value for a reporter, commodity, and flow direction. |
+| `comtrade_get_top_commodities` | Rank commodity categories by trade value for a reporter and flow direction. |
+| `comtrade_get_data_availability` | Check which reporter/period/classification combinations have published data. |
+| `comtrade_get_services_trade` | Fetch international trade-in-services data (EBOPS 2010). |
 
-### `comtrade_lookup_countries`
+### Resources
 
-Resolve reporter and partner codes from natural-language names or ISO identifiers.
+| Resource | Description |
+|:---------|:------------|
+| `comtrade://countries` | Complete country/area code list with M49 codes, ISO identifiers, and reporter validity. |
+| `comtrade://hs-classification/{level}` | Top-level HS commodity hierarchy at chapter, heading, or subheading level. |
 
-- Accepts partial country name, ISO alpha-2 (`US`), or ISO alpha-3 (`USA`)
-- `role` filter: `"reporter"`, `"partner"`, or `"any"` — narrows results to only valid reporters or all partner areas
-- `validAsReporter` flag on each result — regional groupings (e.g., `Africa`, `ASEAN`) are valid as partners but cannot be used as `reporter_code`
-- Optional `include_groups` to surface regional aggregate codes
-- Reference data is loaded from UN static files at startup — no key required, instant response
+Both resources are also reachable via tools — `comtrade_lookup_countries` and `comtrade_search_commodities` cover the same data with keyword search.
 
----
+## Capability reference
 
-### `comtrade_search_commodities`
+### `comtrade_lookup_countries` <sub>tool</sub>
 
-Find the HS code for any product before querying trade flows.
-
-- Free-text keyword search across HS descriptions (e.g., `"semiconductors"`, `"crude oil"`)
-- Accepts known code prefixes — `"8471"` returns the matching chapter and all descendants
-- Aggregation level control: start with `aggr_level: 2` (chapters) to scope a sector, then narrow to `4` or `6` for specific headings or subheadings
-- `recommended_query_code` field on each result — the best level for downstream `comtrade_get_trade_flows` calls
-- Reference data loaded at startup from UN HS files, covering HS combined and editions H0–H6
+- Accepts a partial or full country name, or an ISO alpha-2/alpha-3 code; `role` filters to `"reporter"`, `"partner"`, or `"any"` (default)
+- `validAsReporter` flag on each match — regional groupings (e.g. World, EU) are valid partners but not valid reporters
+- `include_groups` (default `true`) toggles regional/economic groupings in the results
+- Reference data loads from UN static files at startup — no subscription key required, instant response
 
 ---
 
-### `comtrade_get_trade_flows`
+### `comtrade_search_commodities` <sub>tool</sub>
 
-Fetch bilateral trade records — the primary data retrieval tool.
-
-- `reporter_code` + `flow_code` (`M` import / `X` export / `RX` re-export / `RM` re-import) + `period[]` required
-- `period` accepts annual (`YYYY`) or monthly (`YYYYMM`); pass multiple years as an array for time-series in one request (avoids multiple API calls against the 500-req/day free limit)
-- `partner_code: 0` aggregates across all partners (World total) — no partner lookup needed
-- `cmd_code[]` accepts comma-separated HS codes; omit or use `TOTAL` for cross-commodity totals
-- Free-tier cap: 500 records per call; `truncated: true` + hint when the cap is hit
-- Joins country and commodity descriptions from the in-memory reference cache — preview-endpoint responses omit `*Desc` fields
+- Free-text keyword, partial description, or code-prefix search; `classification` selects `HS` (combined dataset, default) or a specific edition `H0`–`H6`
+- `aggr_level` narrows to `2` (chapter), `4` (heading), or `6` (subheading); omit for all levels
+- Up to 200 results per call (`limit`, default 50); `truncated: true` when matches exceed the limit
+- `recommendedQueryCode` on each result — the best code to pass as `cmd_code` in trade queries
 
 ---
 
-### `comtrade_get_trade_balance`
+### `comtrade_list_service_categories` <sub>tool</sub>
 
-Compute signed trade balance from parallel export + import fetches.
-
-- Runs export (`flowCode=X`) and import (`flowCode=M`) requests in parallel, then computes locally
-- Returns `balance` (USD, signed), `exports`, `imports`, and `coverageRatio` (exports / imports)
-- Optional `cmd_code` filter for commodity-specific balance (e.g., energy trade balance)
-- Surfaces mirror-asymmetry caveat — the balance reflects values as reported by this country, not the mirror reporter
+- Lists EBOPS 2010 service categories, optionally filtered by keyword or `parent_code`
+- Up to 500 results per call (`limit`, default 100); `truncated: true` when matches exceed the limit
+- Returned `id` is the `service_code` for `comtrade_get_services_trade`
 
 ---
 
-### `comtrade_get_top_partners`
+### `comtrade_get_trade_flows` <sub>tool</sub>
 
-Rank trading partners by value for a single period.
-
-- Fetches one record per partner by omitting the partner filter, then sorts locally
-- Joins partner names from the in-memory reference cache
-- `limit` controls N returned (default 10)
-- Answers "who does Germany mainly export machinery to?" in one call
-
----
-
-### `comtrade_get_top_commodities`
-
-Rank commodity chapters or headings by value for a single period.
-
-- `aggr_level: 2` for HS chapter ranking (21 sections), `4` for heading ranking
-- Optional `partner_code` to scope the ranking to a specific bilateral relationship
-- Answers "what does Japan mainly import?" — symmetric counterpart to `comtrade_get_top_partners`
+- Requires `reporter_code`, `flow_code` (`M` import / `X` export / `RX` re-export / `RM` re-import), and 1–12 `period` values (`YYYY` or `YYYYMM`)
+- `partner_code: 0` aggregates all partners (World total); omit for a per-partner breakdown
+- `cmd_code[]` accepts up to 20 HS codes; omit or pass `"TOTAL"` for cross-commodity totals
+- Free-tier cap of 500 records per call; `truncated: true` plus a `truncationHint` when the cap is hit
+- `isReported` flags directly-reported rows vs. UN-estimated/aggregated ones; joins country and commodity descriptions from the startup reference cache
 
 ---
 
-### `comtrade_get_data_availability`
+### `comtrade_get_trade_balance` <sub>tool</sub>
 
-Check data coverage before querying.
-
-- Accepts optional `reporter_code`, `period`, `freq` (`A` annual / `M` monthly), and `classification` filters
-- Returns dataset records with period, classification, record count, and publication date
-- Annual data is typically published 3–12 months after the reference year — call this before querying recent periods to avoid empty results
+- Runs export (`X`) and import (`M`) fetches in parallel per period, then computes the balance locally
+- Returns `balanceUsd` (signed), `exportsUsd`, `importsUsd`, and `coverageRatio` (exports / imports) per period
+- Optional `cmd_code[]` (up to 20) restricts the balance to specific commodities
+- `mirrorCaveat` on every response — the balance reflects this reporter's own values, not the mirror partner's
 
 ---
 
-### `comtrade_get_services_trade`
+### `comtrade_get_top_partners` <sub>tool</sub>
 
-Fetch services trade data (EBOPS 2010 classification).
+- Fetches the full per-partner breakdown for one `reporter_code` + `flow_code` (`M`/`X`) + single `period`, then sorts locally by value
+- Optional single `cmd_code`; omit for total merchandise trade
+- Returns up to `limit` partners (max 50, default 10), each with `rank`, `primaryValueUsd`, and `sharePercent`
+- `truncated: true` when the underlying fetch hit the 500-record cap
 
-- Same bilateral structure and parameters as `comtrade_get_trade_flows`
-- `service_code` accepts an EBOPS category code — use `comtrade_list_service_categories` to find the right code
-- Covers financial services, transport, travel, insurance, and all EBOPS 2010 categories
+---
 
-## Resources and prompts
+### `comtrade_get_top_commodities` <sub>tool</sub>
 
-| Type | Name | Description |
-|:-----|:-----|:------------|
-| Resource | `comtrade://countries` | Complete country/area code list — M49 numeric codes, ISO identifiers, `validAsReporter` flag, and group membership. Loaded from UN reference data at startup. |
-| Resource | `comtrade://hs-classification/{level}` | Top-level HS commodity hierarchy at aggregation level `2` (chapters), `4` (headings), or `6` (top ~1 200 subheadings). Full leaf enumeration is too large to inject — use `comtrade_search_commodities` for keyword search. |
+- Ranks commodity categories for one `reporter_code` + `flow_code` + single `period`
+- `aggr_level` selects `2` (HS chapter, default) or `4` (heading); optional `partner_code` scopes to one bilateral relationship
+- Returns up to `limit` categories (max 50, default 10), each with `rank`, `primaryValueUsd`, and `sharePercent`
+- `truncated: true` when the underlying fetch hit the 500-record cap
 
-All resource data is also reachable via tools. `comtrade://hs-classification/{level}` provides a browsable hierarchy; for keyword resolution use `comtrade_search_commodities` instead.
+---
+
+### `comtrade_get_data_availability` <sub>tool</sub>
+
+- All filters optional — `reporter_code`, `period`, `freq` (`A`/`M`, default `A`), `type_code` (`C` goods / `S` services, default `C`), `classification` (default `HS`)
+- Returns per-dataset `totalRecords` and `publicationDate`; omit all filters to browse the full availability index
+- Annual data typically publishes 3–12 months after the reference year — call this before querying recent periods
+
+---
+
+### `comtrade_get_services_trade` <sub>tool</sub>
+
+- Same bilateral shape as `comtrade_get_trade_flows`: `reporter_code`, `flow_code` (`M`/`X`), 1–12 `period` values, optional `partner_code` (`0` for all partners combined)
+- `service_code` filters to one EBOPS category; resolve it with `comtrade_list_service_categories`
+- Free-tier cap of 500 records per call; `truncated: true` plus a `truncationHint` when the cap is hit
+- Services trade has more limited country and period coverage than goods trade
+
+---
+
+### `comtrade://countries` <sub>resource</sub>
+
+- Complete country/area list as `application/json` — M49 code, ISO identifiers, `validAsReporter`, and `isGroup`
+- Loaded from the same startup reference cache `comtrade_lookup_countries` searches
+
+---
+
+### `comtrade://hs-classification/{level}` <sub>resource</sub>
+
+- `level` path param accepts `2` (chapters), `4` (headings), or `6` (subheadings); any other value throws a validation error
+- Returns each code's `description`, `parent`, and `isLeaf`; full leaf enumeration is too large to inject — use `comtrade_search_commodities` for keyword search
 
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core):
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
-- Declarative tool and resource definitions — single file per primitive, framework handles registration and validation
-- Unified error handling — handlers throw, framework catches, classifies, and formats
-- Pluggable auth: `none`, `jwt`, `oauth`
-- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
-- Structured logging with optional OpenTelemetry tracing
-- STDIO and Streamable HTTP transports
+Comtrade-specific:
 
-UN Comtrade-specific:
-
-- Reference data (country codes, HS hierarchy, EBOPS categories) loaded at startup from UN static files — fast keyword search with no per-request fetches
-- Authenticated (`data/v1/get`) and public preview (`public/v1/preview`) endpoint support — tools fall back to the preview endpoint when no subscription key is set
-- Parallel sub-request execution for workflow tools (`comtrade_get_trade_balance` runs export + import fetches concurrently)
-- Exponential backoff with retry on 429 responses
-- Description enrichment — joins country names and HS/EBOPS descriptions from the in-memory reference cache before returning results, covering the preview endpoint's omission of `*Desc` fields
+- Reference data (country codes, HS hierarchy, EBOPS categories) loaded from UN static files at startup — keyword search with no per-request fetches
+- Authenticated (`data/v1/get`) and public preview (`public/v1/preview`) endpoints — tools fall back to the preview endpoint when no subscription key is set
+- Parallel sub-request execution in workflow tools (`comtrade_get_trade_balance` runs export and import fetches concurrently)
+- Retry with exponential backoff on transient failures, honoring an upstream `Retry-After` header when present
+- Description enrichment — joins country and HS/EBOPS names from the reference cache, covering the preview endpoint's omission of `*Desc` fields
 
 Agent-friendly output:
 
-- `truncated: true` + hint on any response where the 500-record free-tier cap was hit — agents know when results are incomplete and can narrow the query
-- `isReported` flag on trade flow records — distinguishes directly reported values from UN-estimated/aggregated rows so agents can reason about data reliability
-- `validAsReporter` on country lookups — prevents agents from constructing invalid queries with partner-only area codes
-- Mirror-asymmetry caveat on trade balance output — agents can surface methodological notes to users without parsing error text
+- `truncated: true` plus a recovery hint on any response capped at the 500-record free-tier limit
+- `isReported` flag on trade flow records distinguishes directly-reported values from UN-estimated/aggregated rows
+- `validAsReporter` on country lookups prevents constructing invalid queries with partner-only area codes
+- `mirrorCaveat` on trade-balance output surfaces the methodological caveat without parsing error text
 
 ## Getting started
 
@@ -205,6 +205,25 @@ Or with npx (no Bun required):
 }
 ```
 
+Or with Docker:
+
+```json
+{
+  "mcpServers": {
+    "un-comtrade-mcp-server": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "MCP_TRANSPORT_TYPE=stdio",
+        "-e", "COMTRADE_SUBSCRIPTION_KEY=your-key-here",
+        "ghcr.io/cyanheads/un-comtrade-mcp-server:latest"
+      ]
+    }
+  }
+}
+```
+
 For Streamable HTTP, set the transport and start the server:
 
 ```sh
@@ -214,7 +233,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 COMTRADE_SUBSCRIPTION_KEY=... bun run
 
 ### Prerequisites
 
-- [Bun v1.3.0](https://bun.sh/) or higher (or Node.js v24+). Development and Docker images use Bun 1.4.0.
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+). Development and Docker images use Bun 1.4.0.
 - Optional: a [UN Comtrade subscription key](https://comtradedeveloper.un.org/) for full API access. Without one, all tools fall back to the public preview endpoint (500 records/call). Reference/lookup tools (`comtrade_lookup_countries`, `comtrade_search_commodities`, `comtrade_list_service_categories`) never require a key — they query static UN reference files.
 
 ### Installation
@@ -256,6 +275,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path. | `/mcp` |
 | `MCP_PUBLIC_URL` | Public origin override for reverse-proxy deployments. | — |
+| `MCP_SESSION_MODE` | HTTP session posture: `auto`, `stateful`, or `stateless`. No tool asks the caller for input mid-handler, so `src/index.ts` declares `stateless` and every deployment surface restates it. | `stateless` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`). | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
@@ -320,9 +340,13 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 - Wrap external API calls: validate raw → normalize to domain type → return output schema; never fabricate missing fields
 - Reference data (countries, HS codes) joins must pull from the startup cache, not per-request fetches
 
+## Data license
+
+The UN Comtrade license agreement (§5) prohibits redistributing data without prior written UN permission. Connect with your own Comtrade subscription key.
+
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck
