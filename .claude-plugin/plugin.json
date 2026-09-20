@@ -1,19 +1,42 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "un-comtrade-mcp-server",
   "version": "0.1.6",
   "description": "Access UN Comtrade international merchandise and services trade statistics — country lookups, HS commodity search, bilateral trade flows, balances, rankings, and data availability — via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads"
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
   },
   "homepage": "https://github.com/cyanheads/un-comtrade-mcp-server#readme",
   "repository": "https://github.com/cyanheads/un-comtrade-mcp-server",
   "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "trade",
+    "comtrade",
+    "united-nations",
+    "international-trade",
+    "hs-codes"
+  ],
+  "userConfig": {
+    "COMTRADE_SUBSCRIPTION_KEY": {
+      "type": "string",
+      "title": "UN Comtrade Subscription Key",
+      "description": "Azure API Management key from comtradedeveloper.un.org. Optional — without it, tools fall back to the public preview endpoint (500-record cap).",
+      "sensitive": true,
+      "default": ""
+    }
+  },
   "mcpServers": {
     "un-comtrade-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/un-comtrade-mcp-server"],
       "env": {
-        "MCP_TRANSPORT_TYPE": "stdio"
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "COMTRADE_SUBSCRIPTION_KEY": "${user_config.COMTRADE_SUBSCRIPTION_KEY}"
       }
     }
   }

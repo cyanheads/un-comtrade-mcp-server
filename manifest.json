@@ -35,7 +35,8 @@
       "title": "UN Comtrade Subscription Key",
       "description": "Azure API Management key from comtradedeveloper.un.org. Optional — without it, tools fall back to the public preview endpoint (500-record cap).",
       "required": false,
-      "sensitive": true
+      "sensitive": true,
+      "default": ""
     }
   }
 }
