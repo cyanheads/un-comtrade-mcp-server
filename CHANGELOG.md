@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-09-20
+
+Framework adoption ^0.12.3 → ^0.13.6: MCP_SESSION_MODE defaults to stateless via createApp; a rejected tool call classifies as InvalidParams with a synthesized recovery hint; unused error-contract entries dropped and COMTRADE_SUBSCRIPTION_KEY wired through both plugin manifests.
+
 ## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-08-21
 
 Framework adoption ^0.10.6 → ^0.12.3: MCP SDK v2 baseline with strict tool inputs and a declared error envelope; empty-result notices move to ctx.enrich across all eight tools; Bun 1.4 pins and a supply-chain install guard
