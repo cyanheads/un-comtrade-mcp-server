@@ -1,6 +1,6 @@
 # un-comtrade-mcp-server - Directory Structure
 
-Generated on: 2026-09-20 21:02:12
+Generated on: 2026-10-07 12:38:51
 
 ```text
 un-comtrade-mcp-server/
@@ -127,9 +127,11 @@ un-comtrade-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
 ├── src/
@@ -166,6 +168,7 @@ un-comtrade-mcp-server/
 │   └── index.ts
 ├── tests/
 │   ├── config/
+│   │   ├── server-startup.test.ts
 │   │   └── session-mode.test.ts
 │   ├── mcp-server/
 │   │   └── tools/
