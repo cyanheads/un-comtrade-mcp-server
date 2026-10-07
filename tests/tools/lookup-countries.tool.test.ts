@@ -3,7 +3,7 @@
  * @module tests/tools/lookup-countries.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { lookupCountriesTool } from '@/mcp-server/tools/definitions/lookup-countries.tool.js';
 import {
@@ -70,6 +70,30 @@ function seedReferenceService(): ComtradeReferenceService {
 describe('lookupCountriesTool', () => {
   beforeEach(() => {
     seedReferenceService();
+  });
+
+  it('renders country matches, empty results, and invalid-input errors', async () => {
+    const result = await runToolContract(lookupCountriesTool, { query: 'DEU' });
+    expect(result.structuredContent).toMatchObject({
+      matches: [
+        {
+          id: 276,
+          name: 'Germany',
+          iso3: 'DEU',
+          iso2: 'DE',
+          validAsReporter: true,
+          isGroup: false,
+        },
+      ],
+      totalMatches: 1,
+    });
+    expect(result.content).toEqual([{ type: 'text', text: expect.stringContaining('Germany') }]);
+    const empty = await runToolContract(lookupCountriesTool, { query: 'Zzyzxland' });
+    expect(empty.structuredContent).toMatchObject({ matches: [], totalMatches: 0 });
+    expect(JSON.stringify(empty.content)).toContain('Zzyzxland');
+    const invalid = await runToolContract(lookupCountriesTool, { query: false });
+    expect(invalid.isError).toBe(true);
+    expect(JSON.stringify(invalid.content)).toContain('query');
   });
 
   it('finds a country by full name (case-insensitive)', async () => {

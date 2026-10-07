@@ -6,6 +6,7 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
+import { getServerConfig } from './config/server-config.js';
 import { countriesResource } from './mcp-server/resources/definitions/countries.resource.js';
 import { hsClassificationResource } from './mcp-server/resources/definitions/hs-classification.resource.js';
 import { getDataAvailabilityTool } from './mcp-server/tools/definitions/get-data-availability.tool.js';
@@ -57,6 +58,7 @@ await createApp({
     'Data redistribution is prohibited per the UN Comtrade license — local deployment only.',
 
   async setup(core) {
+    getServerConfig();
     // Initialize reference service first — data/meta services depend on it for name lookups
     const refService = initComtradeReferenceService(core.config, core.storage);
     await refService.initialize();
