@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-10-07
+
+Framework 0.13.13 adoption, validated startup configuration, and refreshed distribution metadata.
+
 ## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-09-20
 
 Framework adoption ^0.12.3 → ^0.13.6: MCP_SESSION_MODE defaults to stateless via createApp; a rejected tool call classifies as InvalidParams with a synthesized recovery hint; unused error-contract entries dropped and COMTRADE_SUBSCRIPTION_KEY wired through both plugin manifests.
