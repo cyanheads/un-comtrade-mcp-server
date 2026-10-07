@@ -158,17 +158,16 @@ coverage/
 # CACHE & TEMPORARY FILES
 # =============================================================================
 .cache/
+.scratchpad/
 .parcel-cache/
 *.bak
 
 # =============================================================================
 # ENVIRONMENT & CONFIGURATION
 # =============================================================================
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env*
+.mcpregistry_github_token
+.mcpregistry_registry_token
 .sample-env
 sample.*
 !sample.template.*
