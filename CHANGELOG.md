@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-13 · ⚠️ Breaking
+
+SITC trade queries and reliable preview results.
+
 ## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-10-07
 
 Framework 0.13.13 adoption, validated startup configuration, and refreshed distribution metadata.
