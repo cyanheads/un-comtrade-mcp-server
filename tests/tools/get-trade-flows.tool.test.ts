@@ -64,6 +64,58 @@ describe('getTradeFlowsTool', () => {
     expect(result.truncated).toBe(false);
   });
 
+  it.each([undefined, [], ['TOTAL']])(
+    'defaults omitted and empty commodity arrays to TOTAL (%j)',
+    async (cmd_code) => {
+      await getTradeFlowsTool.handler(
+        getTradeFlowsTool.input.parse({
+          reporter_code: 840,
+          flow_code: 'X',
+          period: ['2022'],
+          cmd_code,
+        }),
+        createMockContext(),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.objectContaining({ cmdCode: 'TOTAL' }),
+        expect.anything(),
+      );
+    },
+  );
+  it.each(['S1', 'S2', 'S3', 'S4', 'SS'])('accepts and forwards %s', async (classification) => {
+    await getTradeFlowsTool.handler(
+      getTradeFlowsTool.input.parse({
+        reporter_code: 840,
+        flow_code: 'X',
+        period: ['2022'],
+        classification,
+      }),
+      createMockContext(),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ classificationCode: classification, typeCode: 'C' }),
+      expect.anything(),
+    );
+  });
+  it('retains raw cap metadata on empty filtered output', async () => {
+    fetchMock.mockResolvedValue({
+      records: [],
+      totalCount: 500,
+      truncated: true,
+      truncationHint: 'may be incomplete',
+    });
+    const result = await getTradeFlowsTool.handler(
+      getTradeFlowsTool.input.parse({ reporter_code: 840, flow_code: 'X', period: ['2022'] }),
+      createMockContext(),
+    );
+    expect(result).toMatchObject({
+      shown: 0,
+      totalCount: 500,
+      truncated: true,
+      truncationHint: 'may be incomplete',
+    });
+  });
+
   it('passes correct parameters to the service', async () => {
     const ctx = createMockContext();
     const input = getTradeFlowsTool.input.parse({

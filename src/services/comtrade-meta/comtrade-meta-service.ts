@@ -36,7 +36,7 @@ export class ComtradeMetaService {
 
     const typeCode = params.typeCode ?? 'C';
     const freqCode = params.freqCode ?? 'A';
-    const classCode = params.classificationCode ?? 'HS';
+    const classCode = params.classificationCode || (typeCode === 'S' ? 'EB10' : 'HS');
 
     const endpoint = `${baseUrl}/public/v1/getDA/${typeCode}/${freqCode}/${classCode}`;
 
@@ -88,7 +88,8 @@ export class ComtradeMetaService {
         classificationCode: row.classificationCode ?? classCode,
         typeCode: row.typeCode ?? typeCode,
         ...(row.totalRecords != null && { totalRecords: row.totalRecords }),
-        ...(row.publicationDate && { publicationDate: row.publicationDate }),
+        ...(row.firstReleased && { firstReleased: row.firstReleased }),
+        ...(row.lastReleased && { lastReleased: row.lastReleased }),
       };
     });
   }

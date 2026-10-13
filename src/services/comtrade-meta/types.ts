@@ -7,12 +7,14 @@
 export interface DataAvailabilityRecord {
   /** Classification code (HS, H0–H6, EB10, etc.). */
   classificationCode: string;
+  /** First release timestamp, as supplied by UN Comtrade. */
+  firstReleased?: string;
   /** Frequency code: A=annual, M=monthly. */
   freqCode: string;
+  /** Latest release or revision timestamp, as supplied by UN Comtrade. */
+  lastReleased?: string;
   /** Period (YYYY or YYYYMM). */
   period: string;
-  /** Publication date. */
-  publicationDate?: string;
   /** M49 reporter code. */
   reporterCode: number;
   /** Reporter name. */
@@ -26,9 +28,10 @@ export interface DataAvailabilityRecord {
 /** Raw availability row from the Comtrade API. */
 export interface RawAvailabilityRow {
   classificationCode?: string;
+  firstReleased?: string;
   freqCode?: string;
+  lastReleased?: string;
   period?: string | number;
-  publicationDate?: string;
   reporterCode?: number;
   reporterDesc?: string;
   totalRecords?: number;

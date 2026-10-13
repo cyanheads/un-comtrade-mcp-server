@@ -18,7 +18,10 @@ import { getTradeFlowsTool } from './mcp-server/tools/definitions/get-trade-flow
 import { listServiceCategoriesTool } from './mcp-server/tools/definitions/list-service-categories.tool.js';
 import { lookupCountriesTool } from './mcp-server/tools/definitions/lookup-countries.tool.js';
 import { searchCommoditiesTool } from './mcp-server/tools/definitions/search-commodities.tool.js';
-import { initComtradeDataService } from './services/comtrade-data/comtrade-data-service.js';
+import {
+  getComtradeDataService,
+  initComtradeDataService,
+} from './services/comtrade-data/comtrade-data-service.js';
 import { initComtradeMetaService } from './services/comtrade-meta/comtrade-meta-service.js';
 import { initComtradeReferenceService } from './services/comtrade-reference/comtrade-reference-service.js';
 
@@ -54,8 +57,8 @@ await createApp({
     '(2) comtrade_search_commodities to find HS codes by keyword, ' +
     '(3) comtrade_get_data_availability to verify data exists for the target period, ' +
     '(4) comtrade_get_trade_flows for raw bilateral records or a workflow tool (balance, top_partners, top_commodities). ' +
-    'Free-tier: 500 records/call, 500 requests/day. Set COMTRADE_SUBSCRIPTION_KEY for full access. ' +
-    'Data redistribution is prohibited per the UN Comtrade license — local deployment only.',
+    'Preview serves one period per upstream request, capped at 500 records; starts are paced at least one second apart. ' +
+    'Balance uses two requests per period. Set COMTRADE_SUBSCRIPTION_KEY for authenticated access subject to subscription limits.',
 
   async setup(core) {
     getServerConfig();
@@ -70,5 +73,8 @@ await createApp({
       `Comtrade reference data loaded. countries=${refService.getAllCountries().length} ` +
         `hsCodes=${refService.getAllHsCodes().length}`,
     );
+  },
+  teardown() {
+    getComtradeDataService().dispose();
   },
 });

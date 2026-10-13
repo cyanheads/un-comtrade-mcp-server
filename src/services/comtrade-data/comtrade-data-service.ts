@@ -7,7 +7,12 @@
 
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
-import { fetchWithTimeout, requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import {
+  createPacer,
+  fetchWithTimeout,
+  requestContextService,
+  withRetry,
+} from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 import type { RawTradeResponse, TradeDataParams, TradeFlowRecord } from './types.js';
@@ -15,11 +20,14 @@ import type { RawTradeResponse, TradeDataParams, TradeFlowRecord } from './types
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_FREE_RECORDS = 500;
 
+/** Normalized records and coverage information from one or more upstream responses. */
 export interface TradeQueryResult {
   records: TradeFlowRecord[];
-  /** Total count as reported by the API (may exceed records.length when truncated). */
+  /** Missing reference descriptions leave original codes and trade values intact. */
+  referenceNotice?: string;
+  /** Sum of upstream counts before normalization; not the full match count when capped. */
   totalCount: number;
-  /** True when totalCount > records.length (preview cap hit). */
+  /** True when any raw preview slice reaches its cap and may be incomplete. */
   truncated: boolean;
   /** Guidance on how to get more data when truncated. */
   truncationHint?: string;
@@ -27,11 +35,47 @@ export interface TradeQueryResult {
 
 /** Handles authenticated and preview trade data requests against the Comtrade API. */
 export class ComtradeDataService {
+  private readonly previewPacer = createPacer({
+    name: 'comtrade-preview',
+    minStartGapMs: 1000,
+    maxConcurrent: 1,
+    maxQueueDepth: 48,
+    cooldown: { baseMs: 1500, maxMs: 30_000 },
+  });
+
   // biome-ignore lint/complexity/noUselessConstructor: params reserved for future use
   constructor(_config: AppConfig, _storage: StorageService) {}
 
   /** Fetch trade data records. Automatically selects authenticated or preview endpoint. */
   async fetchTradeData(params: TradeDataParams, signal?: AbortSignal): Promise<TradeQueryResult> {
+    const hasKey = Boolean(getServerConfig().subscriptionKey);
+    const periods = hasKey ? [params.period] : [...new Set(params.period.split(','))];
+    const slices: TradeQueryResult[] = [];
+    for (const period of periods) {
+      signal?.throwIfAborted();
+      slices.push(await this.fetchSlice({ ...params, period }, signal));
+    }
+    const truncated = slices.some((slice) => slice.truncated);
+    const referenceNotice = slices.find((slice) => slice.referenceNotice)?.referenceNotice;
+    const truncationHint = slices.find((slice) => slice.truncationHint)?.truncationHint;
+    return {
+      records: slices.flatMap((slice) => slice.records),
+      totalCount: slices.reduce((sum, slice) => sum + slice.totalCount, 0),
+      truncated,
+      ...(referenceNotice && { referenceNotice }),
+      ...(truncationHint && { truncationHint }),
+    };
+  }
+
+  /** Release queued preview work on server shutdown. */
+  dispose(): void {
+    this.previewPacer.dispose();
+  }
+
+  private async fetchSlice(
+    params: TradeDataParams,
+    signal?: AbortSignal,
+  ): Promise<TradeQueryResult> {
     const serverConfig = getServerConfig();
     const hasKey = Boolean(serverConfig.subscriptionKey);
     const baseUrl = serverConfig.apiBaseUrl;
@@ -66,25 +110,31 @@ export class ComtradeDataService {
     const url = `${endpoint}?${queryParams.toString()}`;
 
     const raw = await withRetry(
-      async () => {
-        const { subscriptionKey } = serverConfig;
-        const headers: Record<string, string> = subscriptionKey
-          ? { 'Ocp-Apim-Subscription-Key': subscriptionKey }
-          : {};
-        const fetchCtx = requestContextService.createRequestContext({
-          operation: 'ComtradeDataService.fetchTradeData',
-        });
-        const fetchOpts = { headers, ...(signal && { signal }) };
-        const response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS, fetchCtx, fetchOpts);
-        const text = await response.text();
-        if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
-          throw new Error('Comtrade API returned HTML — service may be unavailable.');
-        }
-        return JSON.parse(text) as RawTradeResponse;
+      ({ signal: attemptSignal }) => {
+        const fetchRaw = async (requestSignal: AbortSignal | undefined) => {
+          const { subscriptionKey } = serverConfig;
+          const headers: Record<string, string> = subscriptionKey
+            ? { 'Ocp-Apim-Subscription-Key': subscriptionKey }
+            : {};
+          const fetchCtx = requestContextService.createRequestContext({
+            operation: 'ComtradeDataService.fetchTradeData',
+          });
+          const fetchOpts = { headers, ...(requestSignal && { signal: requestSignal }) };
+          const response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS, fetchCtx, fetchOpts);
+          const text = await response.text();
+          if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
+            throw new Error('Comtrade API returned HTML — service may be unavailable.');
+          }
+          return JSON.parse(text) as RawTradeResponse;
+        };
+        return hasKey
+          ? fetchRaw(attemptSignal)
+          : this.previewPacer.run(fetchRaw, { signal: attemptSignal, maxWaitMs: 60_000 });
       },
       {
         operation: 'ComtradeDataService.fetchTradeData',
         baseDelayMs: 1500,
+        deadlineMs: 120_000,
         ...(signal && { signal }),
       },
     );
@@ -93,6 +143,17 @@ export class ComtradeDataService {
     const totalCount = raw.count ?? rows.length;
     const ref = getComtradeReferenceService();
     const isServicesQuery = typeCode === 'S';
+    const isSitc = !isServicesQuery && ['S1', 'S2', 'S3', 'S4', 'SS'].includes(classCode);
+    let sitc: Awaited<ReturnType<typeof ref.getSitcCodes>> | undefined;
+    let referenceNotice: string | undefined;
+    if (isSitc && rows.some((row) => row.cmdCode && row.cmdCode !== 'TOTAL' && !row.cmdDesc)) {
+      try {
+        sitc = await ref.getSitcCodes(classCode, signal);
+      } catch {
+        signal?.throwIfAborted();
+        referenceNotice = `${classCode} reference descriptions are unavailable; unresolved commodity codes are shown without descriptions. Trade values are retained.`;
+      }
+    }
 
     /**
      * Comtrade preview returns one row per (motCode × customsCode × partner2Code) combination,
@@ -121,12 +182,13 @@ export class ComtradeDataService {
       } else if (
         params.partnerCode === undefined &&
         params.aggrLevel === undefined &&
+        !/^AG\d+$/.test(params.cmdCode ?? '') &&
         !params.cmdCode?.includes(',')
       ) {
         // All-partners, single-commodity: dedup by partnerCode keeping max primaryValue row
-        const bestByPartner = new Map<number, (typeof rows)[0]>();
+        const bestByPartner = new Map<string, (typeof rows)[0]>();
         for (const row of rows) {
-          const pc = row.partnerCode ?? 0;
+          const pc = `${row.period ?? ''}/${row.partnerCode ?? 0}`;
           const existing = bestByPartner.get(pc);
           if (!existing || (row.primaryValue ?? 0) > (existing.primaryValue ?? 0)) {
             bestByPartner.set(pc, row);
@@ -145,7 +207,9 @@ export class ComtradeDataService {
         typeof row.cmdCode === 'string' && row.cmdCode !== 'TOTAL'
           ? isServicesQuery
             ? ref.getEbopsCategory(row.cmdCode)
-            : ref.getHsCode(row.cmdCode)
+            : isSitc
+              ? sitc?.get(row.cmdCode)
+              : ref.getHsCode(row.cmdCode)
           : undefined;
 
       return {
@@ -171,17 +235,19 @@ export class ComtradeDataService {
       };
     });
 
-    const truncated = !hasKey && records.length >= MAX_FREE_RECORDS && totalCount > records.length;
+    const truncated =
+      !hasKey && (rows.length >= MAX_FREE_RECORDS || totalCount >= MAX_FREE_RECORDS);
 
     return {
       records,
       totalCount,
       truncated,
+      ...(referenceNotice && { referenceNotice }),
       ...(truncated && {
         truncationHint:
-          'Results are capped at 500 records on the public preview endpoint. ' +
-          'Set COMTRADE_SUBSCRIPTION_KEY to access up to 250,000 records per call, ' +
-          'or narrow the query by commodity code, partner, or period.',
+          'A public preview response reached 500 records and may be incomplete. ' +
+          'Narrow the query by commodity code, partner, or period. ' +
+          'COMTRADE_SUBSCRIPTION_KEY selects authenticated access; retrieval limits depend on UN Comtrade and the subscription.',
       }),
     };
   }

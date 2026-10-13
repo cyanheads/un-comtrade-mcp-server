@@ -1,0 +1,778 @@
+[
+  {
+    "cmdCode": "70",
+    "period": "2022",
+    "primaryValue": 6093141995,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "54",
+    "period": "2022",
+    "primaryValue": 1633166958,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "31",
+    "period": "2022",
+    "primaryValue": 8472033114,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "69",
+    "period": "2022",
+    "primaryValue": 2488619925,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "50",
+    "period": "2022",
+    "primaryValue": 5444545,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "33",
+    "period": "2022",
+    "primaryValue": 14249645078,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "07",
+    "period": "2022",
+    "primaryValue": 5041198855,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "44",
+    "period": "2022",
+    "primaryValue": 10439488062,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "84",
+    "period": "2022",
+    "primaryValue": 229594064757,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "74",
+    "period": "2022",
+    "primaryValue": 10050035310,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "49",
+    "period": "2022",
+    "primaryValue": 4245569468,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "10",
+    "period": "2022",
+    "primaryValue": 31578971813,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "76",
+    "period": "2022",
+    "primaryValue": 14511112356,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "97",
+    "period": "2022",
+    "primaryValue": 11022556469,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "30",
+    "period": "2022",
+    "primaryValue": 83492754665,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "42",
+    "period": "2022",
+    "primaryValue": 1608211518,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "29",
+    "period": "2022",
+    "primaryValue": 51063344919,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "93",
+    "period": "2022",
+    "primaryValue": 4877954716,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "58",
+    "period": "2022",
+    "primaryValue": 414943142,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "39",
+    "period": "2022",
+    "primaryValue": 83283461448,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "80",
+    "period": "2022",
+    "primaryValue": 261296830,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "02",
+    "period": "2022",
+    "primaryValue": 23344301559,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "48",
+    "period": "2022",
+    "primaryValue": 16984547171,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "86",
+    "period": "2022",
+    "primaryValue": 3522489145,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "90",
+    "period": "2022",
+    "primaryValue": 99053191641,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "56",
+    "period": "2022",
+    "primaryValue": 2611643779,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "96",
+    "period": "2022",
+    "primaryValue": 2661045772,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "65",
+    "period": "2022",
+    "primaryValue": 520352483,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "52",
+    "period": "2022",
+    "primaryValue": 10744033450,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "35",
+    "period": "2022",
+    "primaryValue": 5203359093,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "72",
+    "period": "2022",
+    "primaryValue": 20891806653,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "23",
+    "period": "2022",
+    "primaryValue": 14756163156,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "43",
+    "period": "2022",
+    "primaryValue": 122461554,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "41",
+    "period": "2022",
+    "primaryValue": 1762333002,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "59",
+    "period": "2022",
+    "primaryValue": 2235287089,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "06",
+    "period": "2022",
+    "primaryValue": 535762118,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "45",
+    "period": "2022",
+    "primaryValue": 26438283,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "34",
+    "period": "2022",
+    "primaryValue": 8440858526,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "81",
+    "period": "2022",
+    "primaryValue": 2948133834,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "95",
+    "period": "2022",
+    "primaryValue": 7386132502,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "51",
+    "period": "2022",
+    "primaryValue": 62325068,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "32",
+    "period": "2022",
+    "primaryValue": 8643290744,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "83",
+    "period": "2022",
+    "primaryValue": 5697372356,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "62",
+    "period": "2022",
+    "primaryValue": 2646803861,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "19",
+    "period": "2022",
+    "primaryValue": 4869078710,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "61",
+    "period": "2022",
+    "primaryValue": 3492789204,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "15",
+    "period": "2022",
+    "primaryValue": 4340584630,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "53",
+    "period": "2022",
+    "primaryValue": 23909948,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "13",
+    "period": "2022",
+    "primaryValue": 693971661,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "92",
+    "period": "2022",
+    "primaryValue": 935607555,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "87",
+    "period": "2022",
+    "primaryValue": 134886248740,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "20",
+    "period": "2022",
+    "primaryValue": 5385443897,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "68",
+    "period": "2022",
+    "primaryValue": 4288232624,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "17",
+    "period": "2022",
+    "primaryValue": 2439095851,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "08",
+    "period": "2022",
+    "primaryValue": 14756428632,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "28",
+    "period": "2022",
+    "primaryValue": 16837863760,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "25",
+    "period": "2022",
+    "primaryValue": 3301294468,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "79",
+    "period": "2022",
+    "primaryValue": 542241658,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "55",
+    "period": "2022",
+    "primaryValue": 2320179344,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "18",
+    "period": "2022",
+    "primaryValue": 2024138154,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "11",
+    "period": "2022",
+    "primaryValue": 1150194958,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "40",
+    "period": "2022",
+    "primaryValue": 14656597865,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "12",
+    "period": "2022",
+    "primaryValue": 40194577024,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "05",
+    "period": "2022",
+    "primaryValue": 1346055930,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "63",
+    "period": "2022",
+    "primaryValue": 2939809611,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "82",
+    "period": "2022",
+    "primaryValue": 5077956964,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "57",
+    "period": "2022",
+    "primaryValue": 777073405,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "03",
+    "period": "2022",
+    "primaryValue": 5077262230,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "38",
+    "period": "2022",
+    "primaryValue": 41189143180,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "78",
+    "period": "2022",
+    "primaryValue": 192932176,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "75",
+    "period": "2022",
+    "primaryValue": 3142630280,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "09",
+    "period": "2022",
+    "primaryValue": 1489800504,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "60",
+    "period": "2022",
+    "primaryValue": 905325181,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "46",
+    "period": "2022",
+    "primaryValue": 21763968,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "71",
+    "period": "2022",
+    "primaryValue": 91623447599,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "14",
+    "period": "2022",
+    "primaryValue": 31253795,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "99",
+    "period": "2022",
+    "primaryValue": 62957556291,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "16",
+    "period": "2022",
+    "primaryValue": 2564607039,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "22",
+    "period": "2022",
+    "primaryValue": 10139208091,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "67",
+    "period": "2022",
+    "primaryValue": 159929216,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "85",
+    "period": "2022",
+    "primaryValue": 197748996567,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "27",
+    "period": "2022",
+    "primaryValue": 378564312024,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "88",
+    "period": "2022",
+    "primaryValue": 102849539866,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "64",
+    "period": "2022",
+    "primaryValue": 1343429817,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "21",
+    "period": "2022",
+    "primaryValue": 10459068530,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "01",
+    "period": "2022",
+    "primaryValue": 1198280831,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "24",
+    "period": "2022",
+    "primaryValue": 1229488851,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "47",
+    "period": "2022",
+    "primaryValue": 10850826112,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "91",
+    "period": "2022",
+    "primaryValue": 1656127133,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "04",
+    "period": "2022",
+    "primaryValue": 7910014589,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "89",
+    "period": "2022",
+    "primaryValue": 2615501389,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "37",
+    "period": "2022",
+    "primaryValue": 2195022971,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "66",
+    "period": "2022",
+    "primaryValue": 57514096,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "36",
+    "period": "2022",
+    "primaryValue": 750935499,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "94",
+    "period": "2022",
+    "primaryValue": 10087138553,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "73",
+    "period": "2022",
+    "primaryValue": 22006888226,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  },
+  {
+    "cmdCode": "26",
+    "period": "2022",
+    "primaryValue": 8565364752,
+    "motCode": 0,
+    "customsCode": "C00",
+    "partner2Code": 0
+  }
+]

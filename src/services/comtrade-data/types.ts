@@ -7,15 +7,15 @@
 export interface TradeDataParams {
   /** Aggregation level for HS (2, 4, or 6). */
   aggrLevel?: number;
-  /** HS classification version. */
+  /** Goods or services classification code (HS, SITC, or EBOPS). */
   classificationCode?: string;
-  /** HS commodity codes, comma-separated. TOTAL = sum all commodities. */
+  /** Commodity codes or AG selectors, comma-separated. TOTAL = sum all commodities. */
   cmdCode?: string;
   /** Trade flow code: M=import, X=export, RX=re-export, RM=re-import. */
   flowCode: 'M' | 'X' | 'RX' | 'RM';
   /** A=annual, M=monthly. */
   freqCode?: 'A' | 'M';
-  /** Maximum records to return (default 500, premium up to 250000). */
+  /** Optional authenticated retrieval bound; upstream/subscription limits apply. */
   maxRecords?: number;
   /** Partner code; omit for all partners; 0 = World aggregate. */
   partnerCode?: number;
@@ -29,11 +29,11 @@ export interface TradeDataParams {
 
 /** A single trade flow record returned by the Comtrade API. */
 export interface TradeFlowRecord {
-  /** HS digit aggregation level. */
+  /** Commodity aggregation level supplied by UN Comtrade. */
   aggrLevel?: number;
   /** CIF value (imports only). */
   cifvalue?: number;
-  /** HS commodity code or "TOTAL". */
+  /** HS, SITC, or EBOPS commodity/category code or "TOTAL". */
   cmdCode: string;
   /** Commodity description (joined from reference cache). */
   cmdDesc: string;

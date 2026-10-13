@@ -36,9 +36,10 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       .number()
       .int()
       .min(1)
-      .max(50)
       .default(10)
-      .describe('Maximum number of top commodity categories to return.'),
+      .describe(
+        'Maximum number of top commodity categories to return; above 50 returns all retrieved categories.',
+      ),
   }),
 
   output: z.object({
@@ -96,8 +97,8 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
         reporterCode: input.reporter_code,
         flowCode: input.flow_code,
         period: input.period,
-        ...(input.partner_code !== undefined && { partnerCode: input.partner_code }),
-        aggrLevel: input.aggr_level,
+        partnerCode: input.partner_code ?? 0,
+        cmdCode: `AG${input.aggr_level}`,
       },
       ctx.signal,
     );
@@ -116,7 +117,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
         flowCode: input.flow_code,
         aggrLevel: input.aggr_level,
         totalCommodities: 0,
-        truncated: false,
+        truncated: result.truncated,
       };
     }
 
@@ -134,7 +135,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     const sorted = rows.sort((a, b) => (b.primaryValue ?? 0) - (a.primaryValue ?? 0));
     const totalValueUsd = sorted.reduce((sum, r) => sum + (r.primaryValue ?? 0), 0);
     const totalCommodities = sorted.length;
-    const sliced = sorted.slice(0, input.limit);
+    const sliced = input.limit > 50 ? sorted : sorted.slice(0, input.limit);
 
     return {
       commodities: sliced.map((r, i) => ({

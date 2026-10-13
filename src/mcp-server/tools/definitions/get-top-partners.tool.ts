@@ -31,9 +31,10 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
       .number()
       .int()
       .min(1)
-      .max(50)
       .default(10)
-      .describe('Maximum number of top partners to return.'),
+      .describe(
+        'Maximum number of top partners to return; above 50 returns all retrieved partners.',
+      ),
   }),
 
   output: z.object({
@@ -110,7 +111,7 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
         flowCode: input.flow_code,
         cmdCode,
         totalPartners: 0,
-        truncated: false,
+        truncated: result.truncated,
       };
     }
 
@@ -123,7 +124,7 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
 
     const totalValueUsd = sorted.reduce((sum, r) => sum + (r.primaryValue ?? 0), 0);
     const totalPartners = sorted.length;
-    const sliced = sorted.slice(0, input.limit);
+    const sliced = input.limit > 50 ? sorted : sorted.slice(0, input.limit);
 
     return {
       partners: sliced.map((r, i) => ({

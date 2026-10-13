@@ -11,7 +11,7 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
   description:
     'Check which reporter/period/classification combinations have published data before ' +
     'constructing expensive trade queries. Returns dataset records with period, classification, ' +
-    'record count, and publication date. Call this before querying recent periods — annual data ' +
+    'record count, and first/latest release dates. Call this before querying recent periods — annual data ' +
     'is typically published 3–12 months after the reference year and not all countries report ' +
     'every year. Omit all parameters to browse the full availability index.',
   annotations: { readOnlyHint: true, openWorldHint: false },
@@ -36,8 +36,10 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
       .describe('Trade type: C=commodities (goods), S=services.'),
     classification: z
       .string()
-      .default('HS')
-      .describe('Classification code filter (e.g. "HS", "H6", "EB10").'),
+      .optional()
+      .describe(
+        'Classification code filter (e.g. "HS", "H6", "EB10"). Omitted or blank defaults to HS for goods and EB10 for services.',
+      ),
   }),
 
   output: z.object({
@@ -55,10 +57,14 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
               .number()
               .optional()
               .describe('Number of records available in this dataset.'),
-            publicationDate: z
+            firstReleased: z
               .string()
               .optional()
-              .describe('Date when this dataset was published by UN Comtrade.'),
+              .describe('First release timestamp supplied by UN Comtrade.'),
+            lastReleased: z
+              .string()
+              .optional()
+              .describe('Latest release or revision timestamp supplied by UN Comtrade.'),
           })
           .describe('A single data availability record.'),
       )
@@ -81,7 +87,7 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
       {
         freqCode: input.freq,
         typeCode: input.type_code,
-        classificationCode: input.classification,
+        classificationCode: input.classification || (input.type_code === 'S' ? 'EB10' : 'HS'),
         ...(input.reporter_code !== undefined && { reporterCode: input.reporter_code }),
         ...(input.period && { period: input.period }),
       },
@@ -110,7 +116,8 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
         classificationCode: r.classificationCode,
         typeCode: r.typeCode,
         ...(r.totalRecords != null && { totalRecords: r.totalRecords }),
-        ...(r.publicationDate && { publicationDate: r.publicationDate }),
+        ...(r.firstReleased && { firstReleased: r.firstReleased }),
+        ...(r.lastReleased && { lastReleased: r.lastReleased }),
       })),
       totalDatasets: records.length,
     };
@@ -123,7 +130,8 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
         `\n**${d.reporterDesc}** (${d.reporterCode}) | ${d.period} | ${d.classificationCode} | freq:${d.freqCode} | typeCode:${d.typeCode}`,
       );
       if (d.totalRecords != null) lines.push(`  Records: ${d.totalRecords.toLocaleString()}`);
-      if (d.publicationDate) lines.push(`  Published: ${d.publicationDate}`);
+      if (d.firstReleased) lines.push(`  First Released: ${d.firstReleased}`);
+      if (d.lastReleased) lines.push(`  Last Released: ${d.lastReleased}`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

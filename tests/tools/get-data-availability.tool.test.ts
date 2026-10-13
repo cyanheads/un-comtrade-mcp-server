@@ -22,7 +22,8 @@ const AVAILABILITY_RECORD = {
   classificationCode: 'HS',
   typeCode: 'C' as const,
   totalRecords: 250_000,
-  publicationDate: '2023-03-15',
+  firstReleased: '2023-03-15',
+  lastReleased: '2024-05-20',
 };
 
 describe('getDataAvailabilityTool', () => {
@@ -87,7 +88,7 @@ describe('getDataAvailabilityTool', () => {
         freqCode: 'A' as const,
         classificationCode: 'HS',
         typeCode: 'C' as const,
-        // totalRecords and publicationDate omitted
+        // Counts and release dates omitted
       },
     ]);
     const ctx = createMockContext({ errors: getDataAvailabilityTool.errors });
@@ -95,6 +96,8 @@ describe('getDataAvailabilityTool', () => {
     const result = await getDataAvailabilityTool.handler(input, ctx);
     expect(result.datasets[0]).not.toHaveProperty('totalRecords');
     expect(result.datasets[0]).not.toHaveProperty('publicationDate');
+    expect(result.datasets[0]).not.toHaveProperty('firstReleased');
+    expect(result.datasets[0]).not.toHaveProperty('lastReleased');
   });
 
   it('formats output with all key fields', () => {
@@ -112,5 +115,6 @@ describe('getDataAvailabilityTool', () => {
     expect(text).toContain('C');
     expect(text).toContain('250,000');
     expect(text).toContain('2023-03-15');
+    expect(text).toContain('2024-05-20');
   });
 });

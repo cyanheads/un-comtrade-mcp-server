@@ -48,9 +48,8 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       .number()
       .int()
       .min(1)
-      .max(200)
       .default(50)
-      .describe('Maximum number of results to return.'),
+      .describe('Maximum number of results to return; above 200 returns all matching codes.'),
   }),
 
   output: z.object({
@@ -121,7 +120,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
     }
 
     const total = results.length;
-    const sliced = results.slice(0, input.limit);
+    const sliced = input.limit > 200 ? results : results.slice(0, input.limit);
 
     if (total > sliced.length) {
       ctx.enrich.notice(

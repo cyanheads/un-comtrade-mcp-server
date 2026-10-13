@@ -36,9 +36,10 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
       .number()
       .int()
       .min(1)
-      .max(500)
       .default(100)
-      .describe('Maximum number of categories to return.'),
+      .describe(
+        'Maximum number of categories to return; above 500 returns all matching categories.',
+      ),
   }),
 
   output: z.object({
@@ -99,7 +100,7 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
     }
 
     const total = results.length;
-    const sliced = results.slice(0, input.limit);
+    const sliced = input.limit > 500 ? results : results.slice(0, input.limit);
 
     if (total > sliced.length) {
       ctx.enrich.notice(

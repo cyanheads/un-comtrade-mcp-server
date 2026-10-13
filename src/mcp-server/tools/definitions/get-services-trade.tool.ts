@@ -28,7 +28,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     'Same bilateral structure as goods trade: returns flow value in USD, period, and ' +
     'reporter/partner/category metadata for each row. ' +
     'Use comtrade_list_service_categories to find the right service code before querying. ' +
-    'Note: services trade data has more limited country and period coverage than goods trade.',
+    'Preview makes one paced request per served period, capped at 500 records per request. Services coverage is more limited than goods trade.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   input: z.object({
@@ -39,8 +39,10 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     period: z
       .array(z.string().min(4))
       .min(1)
-      .max(12)
-      .describe('One or more annual periods (YYYY) or monthly periods (YYYYMM).'),
+      .max(120)
+      .describe(
+        'Periods (YYYY or YYYYMM). Serves the first 12 and discloses the remainder; input ceiling 120. Preview makes one paced request per period.',
+      ),
     partner_code: z
       .number()
       .int()
@@ -61,16 +63,35 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
 
   output: z.object({
     records: z.array(ServicesFlowRecordSchema).describe('Services trade flow records.'),
-    totalCount: z.number().describe('Total records reported by the API.'),
+    totalCount: z
+      .number()
+      .describe(
+        'Sum of upstream response counts before local filtering; not a full match count when capped.',
+      ),
     shown: z.number().describe('Number of records returned.'),
-    truncated: z.boolean().describe('True when results were capped at 500 records.'),
-    truncationHint: z.string().optional().describe('How to get full data when truncated.'),
+    truncated: z
+      .boolean()
+      .describe('True when any preview response reached 500 and may be incomplete.'),
+    truncationHint: z
+      .string()
+      .optional()
+      .describe('Query narrowing and authenticated access guidance when possibly incomplete.'),
   }),
 
   enrichment: {
+    unservedPeriods: z
+      .array(z.string())
+      .optional()
+      .describe('Periods beyond the 12-period work cap; query them separately.'),
     notice: z.string().optional().describe('Recovery hint when no records are returned.'),
   },
 
+  enrichmentTrailer: {
+    unservedPeriods: {
+      render: (periods) =>
+        periods ? `**Unserved periods:** ${periods.join(', ')}. Query them separately.` : '',
+    },
+  },
   async handler(input, ctx) {
     ctx.log.info('comtrade_get_services_trade', {
       reporter: input.reporter_code,
@@ -79,11 +100,12 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     });
 
     const svc = getComtradeDataService();
+    if (input.period.length > 12) ctx.enrich({ unservedPeriods: input.period.slice(12) });
     const result = await svc.fetchTradeData(
       {
         reporterCode: input.reporter_code,
         flowCode: input.flow_code,
-        period: input.period.join(','),
+        period: input.period.slice(0, 12).join(','),
         ...(input.partner_code !== undefined && { partnerCode: input.partner_code }),
         ...(input.service_code && { cmdCode: input.service_code }),
         typeCode: 'S',
@@ -101,9 +123,10 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       );
       return {
         records: [],
-        totalCount: 0,
+        totalCount: result.totalCount,
         shown: 0,
-        truncated: false,
+        truncated: result.truncated,
+        ...(result.truncationHint && { truncationHint: result.truncationHint }),
       };
     }
 

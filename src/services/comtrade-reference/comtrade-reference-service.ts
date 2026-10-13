@@ -29,6 +29,7 @@ export class ComtradeReferenceService {
   private hsByCode = new Map<string, HsCode>();
   /** EBOPS categories keyed by category code. */
   private ebopsByCode = new Map<string, EbopsCategory>();
+  private sitcByClassification = new Map<string, Map<string, RawHsEntry>>();
 
   // biome-ignore lint/complexity/noUselessConstructor: params reserved for future use
   constructor(_config: AppConfig, _storage: StorageService) {}
@@ -111,6 +112,20 @@ export class ComtradeReferenceService {
     return this.hsByCode.get(code);
   }
 
+  /** Load a SITC revision only when requested; cache successful loads, never a caller's pending work. */
+  async getSitcCodes(
+    classification: string,
+    signal?: AbortSignal,
+  ): Promise<Map<string, RawHsEntry>> {
+    const cached = this.sitcByClassification.get(classification);
+    if (cached) return cached;
+    const entries = await this.fetchJson<RawHsEntry>(`${classification}.json`, signal, 10_000);
+    signal?.throwIfAborted();
+    const index = new Map(entries.map((entry) => [entry.id, entry]));
+    this.sitcByClassification.set(classification, index);
+    return index;
+  }
+
   /** Look up an EBOPS category by code. */
   getEbopsCategory(code: string): EbopsCategory | undefined {
     return this.ebopsByCode.get(code);
@@ -180,15 +195,17 @@ export class ComtradeReferenceService {
     return results;
   }
 
-  private fetchJson<T>(filename: string): Promise<T[]> {
+  private fetchJson<T>(filename: string, signal?: AbortSignal, deadlineMs = 120_000): Promise<T[]> {
     return withRetry(
-      async () => {
+      async ({ signal: attemptSignal }) => {
         const url = `${REFERENCE_BASE}/${filename}`;
         const ctx = requestContextService.createRequestContext({
           operation: `ComtradeReferenceService.fetchJson`,
           additionalContext: { filename },
         });
-        const response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS, ctx, {});
+        const response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS, ctx, {
+          signal: attemptSignal,
+        });
         const text = await response.text();
         if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
           throw new Error('Reference endpoint returned HTML — service may be unavailable.');
@@ -203,6 +220,8 @@ export class ComtradeReferenceService {
       {
         operation: `ComtradeReferenceService.fetchJson:${filename}`,
         baseDelayMs: 2000,
+        deadlineMs,
+        ...(signal && { signal }),
       },
     );
   }
