@@ -9,7 +9,7 @@
 
 
 
-[![Version](https://img.shields.io/badge/Version-0.1.8-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/un-comtrade-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/un-comtrade-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/un-comtrade-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.8-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/un-comtrade-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/un-comtrade-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/un-comtrade-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -21,11 +21,17 @@
 
 </div>
 
+<div align="center">
+
+**Public Hosted Server:** [https://un-comtrade.caseyjhand.com/mcp](https://un-comtrade.caseyjhand.com/mcp)
+
+</div>
+
 ---
 
 ## Overview
 
-International merchandise and services trade statistics from UN Comtrade. Resolve country and HS commodity codes, fetch bilateral trade flows and services trade, and compute balances, partner/commodity rankings, and data availability from any MCP client. Runs as a stdio process or a local Streamable HTTP server.
+International merchandise and services trade statistics from UN Comtrade. Resolve country and HS commodity codes, fetch bilateral trade flows and services trade, and compute balances, partner/commodity rankings, and data availability from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
 
 ### Tools
 
@@ -65,7 +71,7 @@ Both resources are also reachable via tools — `comtrade_lookup_countries` and 
 
 - Free-text keyword, partial description, or code-prefix search; `classification` selects `HS` (combined dataset, default) or a specific edition `H0`–`H6`
 - `aggr_level` narrows to `2` (chapter), `4` (heading), or `6` (subheading); omit for all levels
-- Up to 200 results per call (`limit`, default 50); `truncated: true` when matches exceed the limit
+- `limit` defaults to 50; values above 200 return all matches. `truncated: true` when matches exceed a smaller limit
 - `recommendedQueryCode` on each result — the best code to pass as `cmd_code` in trade queries
 
 ---
@@ -73,35 +79,37 @@ Both resources are also reachable via tools — `comtrade_lookup_countries` and 
 ### `comtrade_list_service_categories` <sub>tool</sub>
 
 - Lists EBOPS 2010 service categories, optionally filtered by keyword or `parent_code`
-- Up to 500 results per call (`limit`, default 100); `truncated: true` when matches exceed the limit
+- `limit` defaults to 100; values above 500 return all categories. `truncated: true` when matches exceed a smaller limit
 - Returned `id` is the `service_code` for `comtrade_get_services_trade`
 
 ---
 
 ### `comtrade_get_trade_flows` <sub>tool</sub>
 
-- Requires `reporter_code`, `flow_code` (`M` import / `X` export / `RX` re-export / `RM` re-import), and 1–12 `period` values (`YYYY` or `YYYYMM`)
+- Requires `reporter_code`, `flow_code` (`M` import / `X` export / `RX` re-export / `RM` re-import), and `period` values (`YYYY` or `YYYYMM`). Serves the first 12 periods; inputs up to 120 disclose remaining `unservedPeriods`
 - `partner_code: 0` aggregates all partners (World total); omit for a per-partner breakdown
-- `cmd_code[]` accepts up to 20 HS codes; omit or pass `"TOTAL"` for cross-commodity totals
-- Free-tier cap of 500 records per call; `truncated: true` plus a `truncationHint` when the cap is hit
+- `classification` supports `HS`, `H0`–`H6`, and SITC `S1`–`S4`/`SS`. HS search remains HS-only; supply known SITC codes from the selected revision
+- `cmd_code[]` serves the first 20 HS or SITC codes; inputs up to 200 disclose `unservedCmdCodes`. Omitted or empty arrays and `["TOTAL"]` request cross-commodity totals
+- Keyless preview makes one paced request per distinct served period. `truncated: true` plus `truncationHint` means a raw response reached 500 and may be incomplete; `totalCount` sums upstream counts before filtering, not a known full match count
 - `isReported` flags directly-reported rows vs. UN-estimated/aggregated ones; joins country and commodity descriptions from the startup reference cache
 
 ---
 
 ### `comtrade_get_trade_balance` <sub>tool</sub>
 
-- Runs export (`X`) and import (`M`) fetches in parallel per period, then computes the balance locally
+- Uses two paced preview requests per distinct served period; authenticated export (`X`) and import (`M`) calls batch periods in parallel, then compute the balance locally
 - Returns `balanceUsd` (signed), `exportsUsd`, `importsUsd`, and `coverageRatio` (exports / imports) per period
-- Optional `cmd_code[]` (up to 20) restricts the balance to specific commodities
+- Optional `cmd_code[]` restricts the balance to HS or SITC commodities. Serves 12 periods and 20 codes per call; input ceilings 120/200, with `unservedPeriods`/`unservedCmdCodes` for the remainder
+- A `notice` discloses possibly incomplete balance values when either raw preview flow reaches 500; `referenceNotice` discloses unavailable SITC descriptions without discarding trade values
 - `mirrorCaveat` on every response — the balance reflects this reporter's own values, not the mirror partner's
 
 ---
 
 ### `comtrade_get_top_partners` <sub>tool</sub>
 
-- Fetches the full per-partner breakdown for one `reporter_code` + `flow_code` (`M`/`X`) + single `period`, then sorts locally by value
+- Fetches a per-partner breakdown for one `reporter_code` + `flow_code` (`M`/`X`) + single `period`, then sorts retrieved rows locally by value
 - Optional single `cmd_code`; omit for total merchandise trade
-- Returns up to `limit` partners (max 50, default 10), each with `rank`, `primaryValueUsd`, and `sharePercent`
+- Returns up to `limit` partners (default 10); above 50 returns all retrieved partners. Each has `rank`, `primaryValueUsd`, and `sharePercent`
 - `truncated: true` when the underlying fetch hit the 500-record cap
 
 ---
@@ -109,25 +117,25 @@ Both resources are also reachable via tools — `comtrade_lookup_countries` and 
 ### `comtrade_get_top_commodities` <sub>tool</sub>
 
 - Ranks commodity categories for one `reporter_code` + `flow_code` + single `period`
-- `aggr_level` selects `2` (HS chapter, default) or `4` (heading); optional `partner_code` scopes to one bilateral relationship
-- Returns up to `limit` categories (max 50, default 10), each with `rank`, `primaryValueUsd`, and `sharePercent`
+- `aggr_level` selects `2` (HS chapter, default) or `4` (heading), requested with `AG2`/`AG4`. Omitted `partner_code` defaults to World (`0`); explicit partners scope to a bilateral relationship
+- Returns up to `limit` categories (default 10); above 50 returns all retrieved categories. Each has `rank`, `primaryValueUsd`, and `sharePercent`
 - `truncated: true` when the underlying fetch hit the 500-record cap
 
 ---
 
 ### `comtrade_get_data_availability` <sub>tool</sub>
 
-- All filters optional — `reporter_code`, `period`, `freq` (`A`/`M`, default `A`), `type_code` (`C` goods / `S` services, default `C`), `classification` (default `HS`)
-- Returns per-dataset `totalRecords` and `publicationDate`; omit all filters to browse the full availability index
+- All filters optional — `reporter_code`, `period`, `freq` (`A`/`M`, default `A`), `type_code` (`C` goods / `S` services, default `C`), `classification` (omitted or blank resolves to `HS` for goods, `EB10` for services)
+- Returns optional per-dataset `totalRecords`, `firstReleased`, and `lastReleased`, preserving first release and latest revision independently; omit all filters to browse goods availability
 - Annual data typically publishes 3–12 months after the reference year — call this before querying recent periods
 
 ---
 
 ### `comtrade_get_services_trade` <sub>tool</sub>
 
-- Same bilateral shape as `comtrade_get_trade_flows`: `reporter_code`, `flow_code` (`M`/`X`), 1–12 `period` values, optional `partner_code` (`0` for all partners combined)
+- Same bilateral shape as `comtrade_get_trade_flows`: `reporter_code`, `flow_code` (`M`/`X`), `period` values, optional `partner_code` (`0` for all partners combined). Serves the first 12 periods from inputs up to 120, disclosing `unservedPeriods`
 - `service_code` filters to one EBOPS category; resolve it with `comtrade_list_service_categories`
-- Free-tier cap of 500 records per call; `truncated: true` plus a `truncationHint` when the cap is hit
+- Preview makes one paced request per distinct served period; a raw response reaching 500 produces `truncated: true` plus a truthful `truncationHint`
 - Services trade has more limited country and period coverage than goods trade
 
 ---
@@ -158,14 +166,31 @@ Comtrade-specific:
 
 Agent-friendly output:
 
-- `truncated: true` plus a recovery hint on any response capped at the 500-record free-tier limit
+- `truncated: true` plus a recovery hint when a public preview response reaches 500 records
 - `isReported` flag on trade flow records distinguishes directly-reported values from UN-estimated/aggregated rows
 - `validAsReporter` on country lookups prevents constructing invalid queries with partner-only area codes
 - `mirrorCaveat` on trade-balance output surfaces the methodological caveat without parsing error text
 
 ## Getting started
 
-> **Prerequisites:** A [UN Comtrade subscription key](https://comtradedeveloper.un.org/) is optional but recommended. Without one, tools fall back to the public preview endpoint (500 records/call, lower rate limit). With a free-tier key you get the same record cap but higher request headroom.
+### Public Hosted Instance
+
+A public instance is available at `https://un-comtrade.caseyjhand.com/mcp` — no installation required. It runs on the keyless public preview endpoint (500 records per upstream request), splitting served periods into paced requests at least one second apart. Balance needs two requests per period, so longer arrays take more time. Point any MCP client at it via Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "un-comtrade-mcp-server": {
+      "type": "streamable-http",
+      "url": "https://un-comtrade.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+### Self-Hosted / Local
+
+> **Prerequisites:** A [UN Comtrade subscription key](https://comtradedeveloper.un.org/) is optional. Without one, tools use the public preview endpoint (500 records per upstream request). A key selects authenticated access; retrieval and request limits depend on UN Comtrade and the subscription.
 
 Add the following to your MCP client configuration file.
 
@@ -233,8 +258,8 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 COMTRADE_SUBSCRIPTION_KEY=... bun run
 
 ### Prerequisites
 
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+). Development and Docker images use Bun 1.4.2.
-- Optional: a [UN Comtrade subscription key](https://comtradedeveloper.un.org/) for full API access. Without one, all tools fall back to the public preview endpoint (500 records/call). Reference/lookup tools (`comtrade_lookup_countries`, `comtrade_search_commodities`, `comtrade_list_service_categories`) never require a key — they query static UN reference files.
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+). Development and Docker images use Bun 1.4.3.
+- Optional: a [UN Comtrade subscription key](https://comtradedeveloper.un.org/) for authenticated API access subject to subscription limits. Without one, data tools use the public preview endpoint (500 records per upstream request). Reference/lookup tools (`comtrade_lookup_countries`, `comtrade_search_commodities`, `comtrade_list_service_categories`) never require a key — they query static UN reference files.
 
 ### Installation
 
@@ -345,7 +370,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 ## Data license
 
-The UN Comtrade license agreement (§5) prohibits redistributing data without prior written UN permission. Connect with your own Comtrade subscription key.
+Use UN Comtrade data in accordance with the UN Comtrade license agreement, including its redistribution terms.
 
 ## Contributing
 

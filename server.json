@@ -7,6 +7,12 @@
     "source": "github"
   },
   "version": "0.1.8",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://un-comtrade.caseyjhand.com/mcp"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",

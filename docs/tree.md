@@ -1,6 +1,6 @@
 # un-comtrade-mcp-server - Directory Structure
 
-Generated on: 2026-10-07 12:38:51
+Generated on: 2026-10-13 15:33:11
 
 ```text
 un-comtrade-mcp-server/
@@ -170,6 +170,8 @@ un-comtrade-mcp-server/
 │   ├── config/
 │   │   ├── server-startup.test.ts
 │   │   └── session-mode.test.ts
+│   ├── fixtures/
+│   │   └── comtrade-world-ag2.json
 │   ├── mcp-server/
 │   │   └── tools/
 │   │       └── definitions/
@@ -178,8 +180,11 @@ un-comtrade-mcp-server/
 │   │   ├── countries.resource.test.ts
 │   │   └── hs-classification.resource.test.ts
 │   ├── services/
-│   │   └── comtrade-data-service.test.ts
+│   │   ├── comtrade-data-batch.test.ts
+│   │   ├── comtrade-data-service.test.ts
+│   │   └── comtrade-meta-service.test.ts
 │   └── tools/
+│       ├── comtrade-batch-contract.test.ts
 │       ├── get-data-availability.tool.test.ts
 │       ├── get-services-trade.tool.test.ts
 │       ├── get-top-commodities.tool.test.ts
