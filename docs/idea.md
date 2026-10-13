@@ -5,8 +5,8 @@ UN Comtrade — international trade statistics: imports, exports, and trade bala
 ## API
 
 - **Base**: `https://comtradeapi.un.org/` (new API, replaced legacy)
-- **Auth**: Free tier available (subscription key via https://comtradeplus.un.org/)
-- **Rate limits**: Free tier — 500 requests/day, 100 records per call. Premium unlocks bulk and higher limits.
+- **Auth**: Public preview needs no key; optional subscription key selects authenticated access.
+- **Limits**: Preview allows one period and up to 500 records per upstream request. Authenticated limits depend on UN Comtrade and the subscription.
 - **Docs**: https://comtradeapi.un.org/files/v1/app/reference/ListofReferences.json
 - **Portal**: https://comtradeplus.un.org/
 
@@ -40,13 +40,9 @@ UN Comtrade — international trade statistics: imports, exports, and trade bala
 - `comtrade_get_trends` — trade flow time series for a commodity/country pair
 - `comtrade_search_services` — service trade data by category
 
-## Licensing (audited 2026-05-25)
+## Licensing
 
-- **Status: BLOCKED — redistribution prohibited without written UN permission**
-- License agreement §5: "any copying, automated browsing or downloading, redistribution, publication, or commercial exploitation of any material...is strictly prohibited without the prior written permission of the United Nations"
-- Source: https://comtradeplus.un.org/LicenseAgreement
-- Hosting as an MCP proxy = redistribution under this clause
-- **Path forward**: email comtrade@un.org requesting permission for an open-source MCP server, OR build for local-only use where the user provides their own Comtrade subscription key (data flows user → UN → user, no redistribution by us)
+Use UN Comtrade data in accordance with its [license agreement](https://comtradeplus.un.org/LicenseAgreement), including its redistribution terms. Deployment options are documented in README.md.
 
 ## Notes
 
