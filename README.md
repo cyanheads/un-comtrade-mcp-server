@@ -31,7 +31,7 @@
 
 ## Overview
 
-International merchandise and services trade statistics from UN Comtrade. Resolve country and HS commodity codes, fetch bilateral trade flows and services trade, and compute balances, partner/commodity rankings, and data availability from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+International merchandise and services trade statistics from UN Comtrade. Resolve country and HS commodity codes, fetch bilateral trade flows and services trade, and compute balances, partner/commodity rankings, and data availability.
 
 ### Tools
 
@@ -86,57 +86,49 @@ Both resources are also reachable via tools — `comtrade_lookup_countries` and 
 
 ### `comtrade_get_trade_flows` <sub>tool</sub>
 
-- Requires `reporter_code`, `flow_code` (`M` import / `X` export / `RX` re-export / `RM` re-import), and `period` values (`YYYY` or `YYYYMM`). Serves the first 12 periods; inputs up to 120 disclose remaining `unservedPeriods`
-- `partner_code: 0` aggregates all partners (World total); omit for a per-partner breakdown
-- `classification` supports `HS`, `H0`–`H6`, and SITC `S1`–`S4`/`SS`. HS search remains HS-only; supply known SITC codes from the selected revision
-- `cmd_code[]` serves the first 20 HS or SITC codes; inputs up to 200 disclose `unservedCmdCodes`. Omitted or empty arrays and `["TOTAL"]` request cross-commodity totals
-- Keyless preview makes one paced request per distinct served period. `truncated: true` plus `truncationHint` means a raw response reached 500 and may be incomplete; `totalCount` sums upstream counts before filtering, not a known full match count
-- `isReported` flags directly-reported rows vs. UN-estimated/aggregated ones; joins country and commodity descriptions from the startup reference cache
+- Requires `reporter_code`, `flow_code` (`M` import / `X` export / `RX` re-export / `RM` re-import), and `period` values (`YYYY` or `YYYYMM`). Up to 120 periods are accepted but only the first 12 are served; the rest are listed in `unservedPeriods`
+- `partner_code: 0` returns the World total; omit it for a per-partner breakdown. `classification` supports `HS`, `H0`–`H6`, and SITC `S1`–`S4`/`SS` (commodity search is HS-only)
+- `cmd_code[]` accepts up to 200 codes and serves the first 20, listing the rest in `unservedCmdCodes`; omit it or pass `["TOTAL"]` for cross-commodity totals. `truncated: true` plus `truncationHint` means the response hit the 500-record cap; `isReported` separates directly reported rows from UN-estimated ones
 
 ---
 
 ### `comtrade_get_trade_balance` <sub>tool</sub>
 
-- Uses two paced preview requests per distinct served period; authenticated export (`X`) and import (`M`) calls batch periods in parallel, then compute the balance locally
-- Returns `balanceUsd` (signed), `exportsUsd`, `importsUsd`, and `coverageRatio` (exports / imports) per period
-- Optional `cmd_code[]` restricts the balance to HS or SITC commodities. Serves 12 periods and 20 codes per call; input ceilings 120/200, with `unservedPeriods`/`unservedCmdCodes` for the remainder
-- A `notice` discloses possibly incomplete balance values when either raw preview flow reaches 500; `referenceNotice` discloses unavailable SITC descriptions without discarding trade values
-- `mirrorCaveat` on every response — the balance reflects this reporter's own values, not the mirror partner's
+- Returns `balanceUsd` (signed), `exportsUsd`, `importsUsd`, and `coverageRatio` (exports / imports) per period. Optional `cmd_code[]` restricts the balance to HS or SITC commodities
+- Serves 12 periods and 20 codes per call (accepts up to 120 and 200), listing the rest in `unservedPeriods`/`unservedCmdCodes`. A `notice` warns when either flow hit the 500-record cap and the balance may be incomplete
+- `mirrorCaveat` on every response: the balance reflects this reporter's own values, not the partner's mirror data
 
 ---
 
 ### `comtrade_get_top_partners` <sub>tool</sub>
 
-- Fetches a per-partner breakdown for one `reporter_code` + `flow_code` (`M`/`X`) + single `period`, then sorts retrieved rows locally by value
-- Optional single `cmd_code`; omit for total merchandise trade
-- Returns up to `limit` partners (default 10); above 50 returns all retrieved partners. Each has `rank`, `primaryValueUsd`, and `sharePercent`
-- `truncated: true` when the underlying fetch hit the 500-record cap
+- Takes one `reporter_code`, `flow_code` (`M`/`X`), and single `period`; optional single `cmd_code` (omit for total merchandise trade)
+- Returns up to `limit` partners (default 10; above 50 returns all retrieved), each with `rank`, `primaryValueUsd`, and `sharePercent`
+- `truncated: true` when the fetch hit the 500-record cap
 
 ---
 
 ### `comtrade_get_top_commodities` <sub>tool</sub>
 
-- Ranks commodity categories for one `reporter_code` + `flow_code` + single `period`
-- `aggr_level` selects `2` (HS chapter, default) or `4` (heading), requested with `AG2`/`AG4`. Omitted `partner_code` defaults to World (`0`); explicit partners scope to a bilateral relationship
-- Returns up to `limit` categories (default 10); above 50 returns all retrieved categories. Each has `rank`, `primaryValueUsd`, and `sharePercent`
-- `truncated: true` when the underlying fetch hit the 500-record cap
+- Takes one `reporter_code`, `flow_code`, and single `period`; `aggr_level` is `2` (HS chapter, default) or `4` (heading). `partner_code` defaults to World (`0`); set it to scope to one partner
+- Returns up to `limit` categories (default 10; above 50 returns all retrieved), each with `rank`, `primaryValueUsd`, and `sharePercent`
+- `truncated: true` when the fetch hit the 500-record cap
 
 ---
 
 ### `comtrade_get_data_availability` <sub>tool</sub>
 
 - All filters optional — `reporter_code`, `period`, `freq` (`A`/`M`, default `A`), `type_code` (`C` goods / `S` services, default `C`), `classification` (omitted or blank resolves to `HS` for goods, `EB10` for services)
-- Returns optional per-dataset `totalRecords`, `firstReleased`, and `lastReleased`, preserving first release and latest revision independently; omit all filters to browse goods availability
+- Returns per-dataset `totalRecords`, `firstReleased`, and `lastReleased` where available; omit all filters to browse goods availability
 - Annual data typically publishes 3–12 months after the reference year — call this before querying recent periods
 
 ---
 
 ### `comtrade_get_services_trade` <sub>tool</sub>
 
-- Same bilateral shape as `comtrade_get_trade_flows`: `reporter_code`, `flow_code` (`M`/`X`), `period` values, optional `partner_code` (`0` for all partners combined). Serves the first 12 periods from inputs up to 120, disclosing `unservedPeriods`
+- Same inputs as `comtrade_get_trade_flows`: `reporter_code`, `flow_code` (`M`/`X`), `period` values, optional `partner_code` (`0` for all partners combined). Serves the first 12 of up to 120 periods, listing the rest in `unservedPeriods`
 - `service_code` filters to one EBOPS category; resolve it with `comtrade_list_service_categories`
-- Preview makes one paced request per distinct served period; a raw response reaching 500 produces `truncated: true` plus a truthful `truncationHint`
-- Services trade has more limited country and period coverage than goods trade
+- `truncated: true` plus `truncationHint` when the response hit the 500-record cap. Country and period coverage is more limited than for goods
 
 ---
 
@@ -300,15 +292,15 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path. | `/mcp` |
 | `MCP_PUBLIC_URL` | Public origin override for reverse-proxy deployments. | — |
-| `MCP_SESSION_MODE` | HTTP session posture: `auto`, `stateful`, or `stateless`. No tool asks the caller for input mid-handler, so `src/index.ts` declares `stateless` and every deployment surface restates it. | `stateless` |
+| `MCP_SESSION_MODE` | HTTP session mode: `auto`, `stateful`, or `stateless`. | `stateless` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`). | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
-| `LOG_TOOL_FAILURE_PAYLOADS` | Log failed tool arguments and results, redacted by key name and capped at `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` (default `16384`). Secrets inside free-form values are not redacted. | `false` |
+| `LOG_TOOL_FAILURE_PAYLOADS` | Log failed tool arguments and results, redacted by key name, capped at `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` (default `16384`). Secrets inside free-form values are not redacted. | `false` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1`. | `in-memory` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP base URL for traces (`/v1/traces`) and metrics (`/v1/metrics`). | — |
-| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Opt-in OTLP log endpoint, used as-is; the base URL does not enable logs. | — |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Opt-in OTLP log endpoint, used as-is. | — |
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
 
