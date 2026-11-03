@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-11-03 · ⚠️ Breaking
+
+Classification-aware trade workflows with complete commodity rankings and an agent guide.
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-13 · ⚠️ Breaking
 
 SITC trade queries and reliable preview results.
