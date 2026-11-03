@@ -4,43 +4,86 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import {
+  codeSchema,
+  frequencySchema,
+  m49Schema,
+  periodSchema,
+  periodsMatchFrequency,
+} from '@/mcp-server/tools/comtrade-input.js';
 import { getComtradeMetaService } from '@/services/comtrade-meta/comtrade-meta-service.js';
 
 export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
   title: 'Check Data Availability',
   description:
-    'Check which reporter/period/classification combinations have published data before ' +
-    'constructing expensive trade queries. Returns dataset records with period, classification, ' +
-    'record count, and first/latest release dates. Call this before querying recent periods — annual data ' +
-    'is typically published 3–12 months after the reference year and not all countries report ' +
-    'every year. Omit all parameters to browse the full availability index.',
-  annotations: { readOnlyHint: true, openWorldHint: false },
+    'Check which reporter/period/classification combinations have published data before constructing expensive trade queries. Returns dataset records with period, classification, record count, and first/latest release dates. Call this before querying recent periods — annual data is typically published 3–12 months after the reference year and not all countries report every year. Omit filters to browse the availability index, 50 rows by default. Continue with nextOffset using the same filters and limit.',
+  annotations: { readOnlyHint: true, openWorldHint: true },
+  errors: [
+    {
+      reason: 'upstream_validation',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'UN Comtrade rejects the availability query dimensions.',
+      recovery: 'Check reporter, classification, trade type, frequency and period before retrying.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_upstream_response',
+      code: JsonRpcErrorCode.SerializationError,
+      when: 'UN Comtrade returns malformed availability data.',
+      recovery: 'Retry later when UN Comtrade returns valid availability data.',
+      retryable: false,
+      thrownBy: 'service',
+    },
+  ],
 
-  input: z.object({
-    reporter_code: z
-      .number()
-      .int()
-      .optional()
-      .describe('M49 reporter code to check. Omit to browse availability across all reporters.'),
-    period: z
-      .string()
-      .optional()
-      .describe(
-        'Period to check: YYYY (annual) or YYYYMM (monthly). ' +
-          'Omit to see all available periods for the reporter.',
-      ),
-    freq: z.enum(['A', 'M']).default('A').describe('Frequency: A=annual, M=monthly.'),
-    type_code: z
-      .enum(['C', 'S'])
-      .default('C')
-      .describe('Trade type: C=commodities (goods), S=services.'),
-    classification: z
-      .string()
-      .optional()
-      .describe(
-        'Classification code filter (e.g. "HS", "H6", "EB10"). Omitted or blank defaults to HS for goods and EB10 for services.',
-      ),
-  }),
+  input: z
+    .object({
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .default(50)
+        .describe('Maximum datasets returned per page; defaults to 50.'),
+      offset: z
+        .number()
+        .int()
+        .nonnegative()
+        .default(0)
+        .describe('Number of matching datasets to skip; use nextOffset to continue.'),
+      reporter_code: m49Schema
+        .optional()
+        .describe('M49 reporter code to check. Omit to browse availability across all reporters.'),
+      period: periodSchema
+        .optional()
+        .describe(
+          'Period to check: YYYY (annual) or YYYYMM (monthly). ' +
+            'Omit to see all available periods for the reporter.',
+        ),
+      freq: frequencySchema
+        .default('A')
+        .describe('Frequency: A=annual YYYY, M=monthly YYYYMM (01–12).'),
+      type_code: z
+        .string()
+        .trim()
+        .toUpperCase()
+        .pipe(z.enum(['C', 'S']))
+        .default('C')
+        .describe('Trade type: C=commodities (goods), S=services.'),
+      classification: codeSchema
+        .regex(
+          /^(?:[A-Z][A-Z0-9]*)?$/,
+          'Use a classification identifier containing letters and digits, such as HS, B4, B5, or EB10.',
+        )
+        .optional()
+        .describe(
+          'Classification code filter (e.g. "HS", "H6", "EB10"). Omitted or blank defaults to HS for goods and EB10 for services.',
+        ),
+    })
+    .refine(periodsMatchFrequency, {
+      path: ['period'],
+      message: 'Use YYYY for annual frequency or YYYYMM for monthly frequency.',
+    }),
 
   output: z.object({
     datasets: z
@@ -70,6 +113,15 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
       )
       .describe('Available datasets matching the query.'),
     totalDatasets: z.number().describe('Total number of available dataset records.'),
+    truncated: z
+      .boolean()
+      .describe('Whether this page contains only part of the matching dataset list.'),
+    offset: z.number().describe('Number of matching datasets skipped for this page.'),
+    shown: z.number().describe('Number of datasets returned on this page.'),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe('Offset for the next page; absent when no rows remain.'),
   }),
 
   enrichment: {
@@ -104,11 +156,24 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
       return {
         datasets: [],
         totalDatasets: 0,
+        truncated: false,
+        offset: input.offset,
+        shown: 0,
       };
     }
 
+    const ordered = records.toSorted(
+      (a, b) =>
+        a.reporterCode - b.reporterCode ||
+        a.period.localeCompare(b.period) ||
+        a.classificationCode.localeCompare(b.classificationCode) ||
+        a.typeCode.localeCompare(b.typeCode) ||
+        a.freqCode.localeCompare(b.freqCode),
+    );
+    const page = ordered.slice(input.offset, input.offset + input.limit);
+    const nextOffset = input.offset + page.length;
     return {
-      datasets: records.map((r) => ({
+      datasets: page.map((r) => ({
         reporterCode: r.reporterCode,
         reporterDesc: r.reporterDesc,
         period: r.period,
@@ -120,11 +185,27 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
         ...(r.lastReleased && { lastReleased: r.lastReleased }),
       })),
       totalDatasets: records.length,
+      truncated: page.length < records.length,
+      offset: input.offset,
+      shown: page.length,
+      ...(nextOffset < records.length && { nextOffset }),
     };
   },
 
   format: (result) => {
-    const lines = [`## Data Availability`, `**Datasets Found:** ${result.totalDatasets}`];
+    const lines = [
+      `## Data Availability`,
+      `**Datasets Found:** ${result.totalDatasets}`,
+      `**Partial page:** ${result.truncated}`,
+      `**Offset:** ${result.offset}`,
+      `**Shown:** ${result.shown}`,
+    ];
+    if (result.nextOffset !== undefined) {
+      lines.push(`Continue with offset=${result.nextOffset}, keeping the same filters and limit.`);
+    }
+    if (result.totalDatasets > 0 && result.shown === 0) {
+      lines.push('This offset is past the end of the matching datasets. Use a smaller offset.');
+    }
     for (const d of result.datasets) {
       lines.push(
         `\n**${d.reporterDesc}** (${d.reporterCode}) | ${d.period} | ${d.classificationCode} | freq:${d.freqCode} | typeCode:${d.typeCode}`,

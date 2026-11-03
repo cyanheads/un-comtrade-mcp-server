@@ -3,6 +3,8 @@
  * @module services/comtrade-meta/types
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
+
 /** A data availability record from the Comtrade getDA endpoint. */
 export interface DataAvailabilityRecord {
   /** Classification code (HS, H0–H6, EB10, etc.). */
@@ -25,24 +27,19 @@ export interface DataAvailabilityRecord {
   typeCode: string;
 }
 
-/** Raw availability row from the Comtrade API. */
-export interface RawAvailabilityRow {
-  classificationCode?: string;
-  firstReleased?: string;
-  freqCode?: string;
-  lastReleased?: string;
-  period?: string | number;
-  reporterCode?: number;
-  reporterDesc?: string;
-  totalRecords?: number;
-  typeCode?: string;
-  [key: string]: unknown;
-}
-
-/** Raw API response from getDA. */
-export interface RawAvailabilityResponse {
-  count?: number;
-  data?: RawAvailabilityRow[];
-  error?: string | unknown;
-  message?: string;
-}
+/** Validate the availability envelope while retaining upstream sparsity. */
+export const rawAvailabilitySchema = z.object({
+  data: z.array(
+    z.object({
+      classificationCode: z.string().nullish(),
+      firstReleased: z.string().nullish(),
+      freqCode: z.string().nullish(),
+      lastReleased: z.string().nullish(),
+      period: z.union([z.string(), z.number()]).nullish(),
+      reporterCode: z.number().nullish(),
+      reporterDesc: z.string().nullish(),
+      totalRecords: z.number().nullish(),
+      typeCode: z.string().nullish(),
+    }),
+  ),
+});

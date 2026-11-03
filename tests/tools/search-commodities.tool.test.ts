@@ -69,55 +69,55 @@ describe('searchCommoditiesTool', () => {
     seedReferenceService();
   });
 
-  it('finds commodities by keyword', () => {
+  it('finds commodities by keyword', async () => {
     const ctx = createMockContext();
     const input = searchCommoditiesTool.input.parse({ query: 'coffee' });
-    const result = searchCommoditiesTool.handler(input, ctx);
+    const result = await searchCommoditiesTool.handler(input, ctx);
     expect(result.totalMatches).toBeGreaterThanOrEqual(1);
     expect(result.matches.some((m) => m.id === '09')).toBe(true);
   });
 
-  it('finds by HS code prefix', () => {
+  it('finds by HS code prefix', async () => {
     const ctx = createMockContext();
     const input = searchCommoditiesTool.input.parse({ query: '847' });
-    const result = searchCommoditiesTool.handler(input, ctx);
+    const result = await searchCommoditiesTool.handler(input, ctx);
     expect(result.totalMatches).toBeGreaterThanOrEqual(1);
     const ids = result.matches.map((m) => m.id);
     expect(ids.some((id) => id.startsWith('847'))).toBe(true);
   });
 
-  it('filters by aggr_level 2 (chapters only)', () => {
+  it('filters by aggr_level 2 (chapters only)', async () => {
     const ctx = createMockContext();
     const input = searchCommoditiesTool.input.parse({ query: 'machinery', aggr_level: 2 });
-    const result = searchCommoditiesTool.handler(input, ctx);
+    const result = await searchCommoditiesTool.handler(input, ctx);
     expect(result.matches.every((m) => m.aggrLevel === 2)).toBe(true);
   });
 
-  it('filters by aggr_level 6 (subheadings)', () => {
+  it('filters by aggr_level 6 (subheadings)', async () => {
     const ctx = createMockContext();
     const input = searchCommoditiesTool.input.parse({ query: 'portable', aggr_level: 6 });
-    const result = searchCommoditiesTool.handler(input, ctx);
+    const result = await searchCommoditiesTool.handler(input, ctx);
     expect(result.matches.every((m) => m.aggrLevel === 6)).toBe(true);
     if (result.matches.length > 0) {
       expect(result.matches[0]?.id).toBe('847130');
     }
   });
 
-  it('returns empty result with notice for unknown keyword', () => {
+  it('returns empty result with notice for unknown keyword', async () => {
     const ctx = createMockContext();
     const input = searchCommoditiesTool.input.parse({ query: 'xyzzy_nonexistent_commodity' });
-    const result = searchCommoditiesTool.handler(input, ctx);
+    const result = await searchCommoditiesTool.handler(input, ctx);
     expect(result.totalMatches).toBe(0);
     expect(result.matches).toHaveLength(0);
     expect(result.truncated).toBe(false);
     expect(getEnrichment(ctx).notice).toContain('xyzzy_nonexistent_commodity');
   });
 
-  it('applies limit and adds truncation notice', () => {
+  it('applies limit and adds truncation notice', async () => {
     const ctx = createMockContext();
     // Seed produces 2 "machinery/data" entries at level 4 and 6 — limit to 1
     const input = searchCommoditiesTool.input.parse({ query: 'data processing', limit: 1 });
-    const result = searchCommoditiesTool.handler(input, ctx);
+    const result = await searchCommoditiesTool.handler(input, ctx);
     expect(result.shown).toBeLessThanOrEqual(1);
     if (result.totalMatches > 1) {
       expect(result.truncated).toBe(true);
@@ -126,10 +126,10 @@ describe('searchCommoditiesTool', () => {
     }
   });
 
-  it('includes recommendedQueryCode in output', () => {
+  it('includes recommendedQueryCode in output', async () => {
     const ctx = createMockContext();
     const input = searchCommoditiesTool.input.parse({ query: '8471' });
-    const result = searchCommoditiesTool.handler(input, ctx);
+    const result = await searchCommoditiesTool.handler(input, ctx);
     for (const m of result.matches) {
       expect(m.recommendedQueryCode).toBeDefined();
       expect(m.recommendedQueryCode.length).toBeGreaterThan(0);
@@ -138,6 +138,7 @@ describe('searchCommoditiesTool', () => {
 
   it('formats output with code, description, level, and recommendedQueryCode', () => {
     const output = {
+      classification: 'HS',
       matches: [
         {
           id: '84',

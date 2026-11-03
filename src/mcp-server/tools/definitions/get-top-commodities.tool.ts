@@ -4,22 +4,53 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { flowSchema, periodSchema } from '@/mcp-server/tools/comtrade-input.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
+import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
+import { retrieveCommodityRanking } from './commodity-ranking.js';
 
 export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
   title: 'Get Top Trade Commodities',
   description:
-    'Rank commodity categories for a reporter by trade value for a given flow direction and period. ' +
-    'Returns the top N HS chapters (2-digit) or headings (4-digit) sorted by descending value — ' +
-    'answers "what does country X mainly export?" or "what does country X mainly import?". ' +
-    'Symmetric counterpart to comtrade_get_top_partners. ' +
-    'Optionally filter to a single partner country.',
+    'Rank HS chapters (2-digit) or headings (4-digit) by trade value for one reporter, flow, and annual or monthly period. Retrieves matching TOTAL and the reporter’s HS edition, then queries explicit commodity codes in chunks; capped chunks are subdivided. Shares use matching TOTAL. Incomplete coverage returns available categories without ranks or shares and identifies unresolved codes. Defaults to World; optionally select one bilateral partner. Counterpart to comtrade_get_top_partners.',
   annotations: { readOnlyHint: true, openWorldHint: true },
+  errors: [
+    {
+      reason: 'keyless_hs_edition_unsupported',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'An explicit HS edition requires authenticated access.',
+      recovery: 'Use generic HS classification or configure a Comtrade subscription key.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'upstream_validation',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'UN Comtrade rejects the supplied query dimensions.',
+      recovery: 'Check the reporter, partner, commodity, flow, and period before retrying.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_upstream_response',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'UN Comtrade returns a malformed response.',
+      recovery: 'Retry later when UN Comtrade returns valid trade data.',
+      retryable: false,
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_reporter_filter',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The query omits required reporter filtering.',
+      recovery: 'Supply one reporter code for the commodity ranking query.',
+      thrownBy: 'service',
+    },
+  ],
 
   input: z.object({
     reporter_code: z.number().int().describe('M49 numeric code of the reporting country.'),
-    flow_code: z.enum(['M', 'X']).describe('Trade flow: M=imports, X=exports.'),
-    period: z.string().min(4).describe('Single period: annual (YYYY) or monthly (YYYYMM).'),
+    flow_code: flowSchema.describe('Trade flow: M=imports, X=exports.'),
+    period: periodSchema.describe('Single period: annual (YYYY) or monthly (YYYYMM, month 01–12).'),
     aggr_level: z
       .union([z.literal(2), z.literal(4)])
       .default(2)
@@ -28,10 +59,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       .number()
       .int()
       .optional()
-      .describe(
-        'M49 partner code to filter to a specific bilateral relationship. ' +
-          'Omit to rank commodities across all partners.',
-      ),
+      .describe('M49 partner code for a bilateral relationship; omit for World aggregate (0).'),
     limit: z
       .number()
       .int()
@@ -47,7 +75,12 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       .array(
         z
           .object({
-            rank: z.number().describe('Rank (1 = largest trade value).'),
+            rank: z
+              .number()
+              .optional()
+              .describe(
+                'Rank (1 = largest trade value), only with complete code coverage and known values.',
+              ),
             cmdCode: z.string().describe('HS commodity code.'),
             cmdDesc: z.string().describe('Commodity description.'),
             aggrLevel: z.number().describe('HS aggregation level (2 or 4).'),
@@ -58,7 +91,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
             sharePercent: z
               .number()
               .optional()
-              .describe('Share of total trade value among returned commodities, as a percentage.'),
+              .describe('Share of matching TOTAL trade value, only with complete code coverage.'),
           })
           .describe('A single ranked commodity entry.'),
       )
@@ -75,7 +108,25 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       .describe('Sum of primary values across all returned categories (before limit).'),
     truncated: z
       .boolean()
-      .describe('True when API returned 500 records and results may be incomplete.'),
+      .describe('True when complete commodity-code coverage could not be established.'),
+    coverageComplete: z
+      .boolean()
+      .describe(
+        'Whether every code in the matching HS edition was queried without a capped response.',
+      ),
+    coverageNotice: z.string().describe('Explanation of coverage and ranking availability.'),
+    missingCodes: z
+      .array(z.string())
+      .describe(
+        'Codes whose retrieval failed or remained capped; empty when the code universe is unavailable.',
+      ),
+    classificationCode: z.string().optional().describe('HS edition identified by matching TOTAL.'),
+    denominatorValueUsd: z
+      .number()
+      .optional()
+      .describe(
+        'Matching TOTAL value used as the share denominator, separate from the retrieved-category sum.',
+      ),
   }),
 
   enrichment: {
@@ -92,14 +143,18 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
 
     const svc = getComtradeDataService();
 
-    const result = await svc.fetchTradeData(
+    const result = await retrieveCommodityRanking(
+      svc,
+      getComtradeReferenceService(),
       {
         reporterCode: input.reporter_code,
         flowCode: input.flow_code,
         period: input.period,
         partnerCode: input.partner_code ?? 0,
-        cmdCode: `AG${input.aggr_level}`,
+        classificationCode: 'HS',
+        freqCode: input.period.length === 6 ? 'M' : 'A',
       },
+      input.aggr_level,
       ctx.signal,
     );
 
@@ -117,36 +172,37 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
         flowCode: input.flow_code,
         aggrLevel: input.aggr_level,
         totalCommodities: 0,
-        truncated: result.truncated,
+        truncated: !result.coverageComplete,
+        coverageComplete: result.coverageComplete,
+        coverageNotice: result.coverageNotice,
+        missingCodes: result.missingCodes,
+        ...(result.classificationCode && { classificationCode: result.classificationCode }),
+        ...(result.denominatorValueUsd != null && {
+          denominatorValueUsd: result.denominatorValueUsd,
+        }),
       };
     }
 
     const reporterDesc = result.records[0]?.reporterDesc ?? String(input.reporter_code);
 
-    // Filter to the requested aggr_level and exclude TOTAL rows.
-    // The Comtrade preview endpoint returns aggrLevel=null for all records — infer from code length.
-    const inferAggrLevel = (cmdCode: string): 2 | 4 | 6 =>
-      cmdCode.length <= 2 ? 2 : cmdCode.length <= 4 ? 4 : 6;
-    const rows = result.records.filter(
-      (r) =>
-        r.cmdCode !== 'TOTAL' && (r.aggrLevel ?? inferAggrLevel(r.cmdCode)) === input.aggr_level,
-    );
-
-    const sorted = rows.sort((a, b) => (b.primaryValue ?? 0) - (a.primaryValue ?? 0));
+    const sorted = result.records.sort((a, b) => (b.primaryValue ?? 0) - (a.primaryValue ?? 0));
     const totalValueUsd = sorted.reduce((sum, r) => sum + (r.primaryValue ?? 0), 0);
     const totalCommodities = sorted.length;
+    const valuesKnown = sorted.every((row) => row.primaryValue != null);
     const sliced = input.limit > 50 ? sorted : sorted.slice(0, input.limit);
 
     return {
       commodities: sliced.map((r, i) => ({
-        rank: i + 1,
+        ...(result.coverageComplete && valuesKnown && { rank: i + 1 }),
         cmdCode: r.cmdCode,
         cmdDesc: r.cmdDesc,
         aggrLevel: r.aggrLevel ?? input.aggr_level,
         ...(r.primaryValue != null && { primaryValueUsd: r.primaryValue }),
-        ...(totalValueUsd > 0 &&
+        ...(result.coverageComplete &&
+          result.denominatorValueUsd != null &&
+          result.denominatorValueUsd > 0 &&
           r.primaryValue != null && {
-            sharePercent: Number(((r.primaryValue / totalValueUsd) * 100).toFixed(2)),
+            sharePercent: Number(((r.primaryValue / result.denominatorValueUsd) * 100).toFixed(2)),
           }),
       })),
       reporterCode: input.reporter_code,
@@ -155,8 +211,15 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       flowCode: input.flow_code,
       aggrLevel: input.aggr_level,
       totalCommodities,
-      ...(totalValueUsd > 0 && { totalValueUsd }),
-      truncated: result.truncated,
+      ...(valuesKnown && { totalValueUsd }),
+      truncated: !result.coverageComplete,
+      coverageComplete: result.coverageComplete,
+      coverageNotice: result.coverageNotice,
+      missingCodes: result.missingCodes,
+      ...(result.classificationCode && { classificationCode: result.classificationCode }),
+      ...(result.denominatorValueUsd != null && {
+        denominatorValueUsd: result.denominatorValueUsd,
+      }),
     };
   },
 
@@ -164,17 +227,24 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     const flowLabel = result.flowCode === 'X' ? 'Export' : 'Import';
     const levelLabel = result.aggrLevel === 2 ? 'HS Chapter' : 'HS Heading';
     const lines = [
+      `Coverage complete: ${result.coverageComplete}; truncated: ${result.truncated}. ${result.coverageNotice}`,
+      `Missing codes: ${result.missingCodes.join(', ') || 'none identified'}`,
       `## Top ${flowLabel} Commodities: ${result.reporterDesc} (reporterCode: ${result.reporterCode}) | ${result.period} | ${levelLabel} (aggrLevel: ${result.aggrLevel}) | flowCode: ${result.flowCode}`,
       `**Total Categories:** ${result.totalCommodities}` +
         (result.totalValueUsd != null
           ? ` | **Total Value:** $${result.totalValueUsd.toLocaleString()} USD`
           : ''),
     ];
+    if (result.classificationCode != null) lines.push(`HS edition: ${result.classificationCode}`);
+    if (result.denominatorValueUsd != null)
+      lines.push(`TOTAL denominator: $${result.denominatorValueUsd.toLocaleString()} USD`);
     if (result.truncated) {
-      lines.push(`> **Note:** Results may be truncated at 500 records (preview endpoint limit).`);
+      lines.push('> **Note:** Coverage is incomplete; ranks and shares are withheld.');
     }
     for (const c of result.commodities) {
-      lines.push(`\n**#${c.rank}. ${c.cmdCode}** (aggrLevel: ${c.aggrLevel}) — ${c.cmdDesc}`);
+      lines.push(
+        `\n**${c.rank == null ? '' : `#${c.rank}. `}${c.cmdCode}** (aggrLevel: ${c.aggrLevel}) — ${c.cmdDesc}`,
+      );
       if (c.primaryValueUsd != null) {
         lines.push(`  Value: $${c.primaryValueUsd.toLocaleString()} USD`);
       }

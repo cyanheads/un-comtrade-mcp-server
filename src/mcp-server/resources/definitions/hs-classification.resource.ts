@@ -14,10 +14,7 @@ export const hsClassificationResource = resource('comtrade://hs-classification/{
   name: 'comtrade-hs-classification',
   title: 'Comtrade HS Classification',
   description:
-    'Top-level HS commodity hierarchy at the requested aggregation level: ' +
-    '2 (HS chapters — 21 sections), 4 (headings — 97 chapters), or 6 (6-digit subheadings). ' +
-    'Full leaf-level enumeration is large — use comtrade_search_commodities for keyword search. ' +
-    'This resource provides the structural overview for navigation and code discovery.',
+    'Default HS.json commodity hierarchy at aggregation level 2 (chapters), 4 (headings), or 6 (subheadings). The catalog identifies H6; use comtrade_search_commodities with an explicit edition for historical discovery or keyword search.',
   mimeType: 'application/json',
   params: z.object({
     level: z

@@ -13,7 +13,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { expect, it, vi } from 'vitest';
+import { beforeAll, expect, it, vi } from 'vitest';
 
 const { createApp } = vi.hoisted(() => ({ createApp: vi.fn() }));
 vi.mock('@cyanheads/mcp-ts-core', async (original) => ({
@@ -22,43 +22,42 @@ vi.mock('@cyanheads/mcp-ts-core', async (original) => ({
 }));
 
 const read = (file: string) => readFileSync(file, 'utf-8');
+let declaredSessionMode: string;
 
-it('createApp declares stateless in src/, the durable form', async () => {
+beforeAll(async () => {
   await import('@/index.js');
-  expect(createApp.mock.calls[0]?.[0].sessionMode).toBe('stateless');
+  declaredSessionMode = createApp.mock.calls[0]?.[0].sessionMode;
 });
 
-it.each([undefined, 'stateful'])(
-  'resolves the source default with env override %s',
-  async (override) => {
-    vi.resetModules();
-    await import('@/index.js');
-    const declared = createApp.mock.calls[0]?.[0].sessionMode;
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      OTEL_ENABLED: 'false',
-      MCP_LOG_LEVEL: 'silent',
-    };
-    delete env.MCP_SESSION_MODE;
-    if (override) env.MCP_SESSION_MODE = override;
-    const entry = import.meta.resolve('@cyanheads/mcp-ts-core');
-    const probe = spawnSync(
-      'bun',
-      [
-        '-e',
-        `
+it('createApp declares stateless in src/, the durable form', () => {
+  expect(declaredSessionMode).toBe('stateless');
+});
+
+it.each([undefined, 'stateful'])('resolves the source default with env override %s', (override) => {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OTEL_ENABLED: 'false',
+    MCP_LOG_LEVEL: 'silent',
+  };
+  delete env.MCP_SESSION_MODE;
+  if (override) env.MCP_SESSION_MODE = override;
+  const entry = import.meta.resolve('@cyanheads/mcp-ts-core');
+  const probe = spawnSync(
+    'bun',
+    [
+      '-e',
+      `
     import { createApp } from ${JSON.stringify(entry)};
-    await createApp({ sessionMode: ${JSON.stringify(declared)},
+    await createApp({ sessionMode: ${JSON.stringify(declaredSessionMode)},
       setup(core) { process.stdout.write(core.config.mcpSessionMode); process.exit(0); }
     });
   `,
-      ],
-      { cwd: tmpdir(), env, encoding: 'utf8', timeout: 10000 },
-    );
-    expect(probe.status, probe.stderr).toBe(0);
-    expect(probe.stdout).toBe(override ?? 'stateless');
-  },
-);
+    ],
+    { cwd: tmpdir(), env, encoding: 'utf8', timeout: 10000 },
+  );
+  expect(probe.status, probe.stderr).toBe(0);
+  expect(probe.stdout).toBe(override ?? 'stateless');
+});
 
 it('the Dockerfile sets it explicitly, restating the declared default', () => {
   expect(read('Dockerfile')).toContain('ENV MCP_SESSION_MODE="stateless"');

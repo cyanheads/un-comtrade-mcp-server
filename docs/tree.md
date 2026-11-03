@@ -1,6 +1,6 @@
 # un-comtrade-mcp-server - Directory Structure
 
-Generated on: 2026-10-13 16:05:37
+Generated on: 2026-11-03 08:18:44
 
 ```text
 un-comtrade-mcp-server/
@@ -38,6 +38,8 @@ un-comtrade-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -135,6 +137,9 @@ un-comtrade-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── un-comtrade-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -146,20 +151,23 @@ un-comtrade-mcp-server/
 │   │   │       ├── countries.resource.ts
 │   │   │       └── hs-classification.resource.ts
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── get-data-availability.tool.ts
-│   │           ├── get-services-trade.tool.ts
-│   │           ├── get-top-commodities.tool.ts
-│   │           ├── get-top-partners.tool.ts
-│   │           ├── get-trade-balance.tool.ts
-│   │           ├── get-trade-flows.tool.ts
-│   │           ├── list-service-categories.tool.ts
-│   │           ├── lookup-countries.tool.ts
-│   │           └── search-commodities.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── commodity-ranking.ts
+│   │       │   ├── get-data-availability.tool.ts
+│   │       │   ├── get-services-trade.tool.ts
+│   │       │   ├── get-top-commodities.tool.ts
+│   │       │   ├── get-top-partners.tool.ts
+│   │       │   ├── get-trade-balance.tool.ts
+│   │       │   ├── get-trade-flows.tool.ts
+│   │       │   ├── list-service-categories.tool.ts
+│   │       │   ├── lookup-countries.tool.ts
+│   │       │   └── search-commodities.tool.ts
+│   │       └── comtrade-input.ts
 │   ├── services/
 │   │   ├── comtrade-data/
 │   │   │   ├── comtrade-data-service.ts
-│   │   │   └── types.ts
+│   │   │   ├── types.ts
+│   │   │   └── upstream-validation-error.ts
 │   │   ├── comtrade-meta/
 │   │   │   ├── comtrade-meta-service.ts
 │   │   │   └── types.ts
@@ -180,12 +188,16 @@ un-comtrade-mcp-server/
 │   ├── resources/
 │   │   ├── countries.resource.test.ts
 │   │   └── hs-classification.resource.test.ts
+│   ├── scripts/
+│   │   └── clean-mcpb.test.ts
 │   ├── services/
 │   │   ├── comtrade-data-batch.test.ts
 │   │   ├── comtrade-data-service.test.ts
-│   │   └── comtrade-meta-service.test.ts
+│   │   ├── comtrade-meta-service.test.ts
+│   │   └── comtrade-reference-service.test.ts
 │   └── tools/
 │       ├── comtrade-batch-contract.test.ts
+│       ├── comtrade-input-contract.test.ts
 │       ├── get-data-availability.tool.test.ts
 │       ├── get-services-trade.tool.test.ts
 │       ├── get-top-commodities.tool.test.ts
@@ -211,7 +223,9 @@ un-comtrade-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json

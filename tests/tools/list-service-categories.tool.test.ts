@@ -18,11 +18,11 @@ function seedReferenceService(): ComtradeReferenceService {
   const svc = initComtradeReferenceService(mockConfig, mockStorage);
   // @ts-expect-error — seeding private map
   svc.ebopsByCode = new Map([
-    ['SA', { id: 'SA', text: 'Transport services', parent: undefined }],
-    ['SAA', { id: 'SAA', text: 'Sea transport', parent: 'SA' }],
-    ['SAB', { id: 'SAB', text: 'Air transport', parent: 'SA' }],
-    ['SB', { id: 'SB', text: 'Travel services', parent: undefined }],
-    ['SC', { id: 'SC', text: 'Financial services', parent: undefined }],
+    ['3', { id: '3', text: '3 Transport', parent: 'TOTAL' }],
+    ['3.1', { id: '3.1', text: '3.1 Sea transport', parent: '3' }],
+    ['3.2', { id: '3.2', text: '3.2 Air transport', parent: '3' }],
+    ['4', { id: '4', text: '4 Travel', parent: 'TOTAL' }],
+    ['7', { id: '7', text: '7 Financial services', parent: 'TOTAL' }],
   ]);
   return svc;
 }
@@ -45,15 +45,15 @@ describe('listServiceCategoriesTool', () => {
     const input = listServiceCategoriesTool.input.parse({ query: 'transport' });
     const result = listServiceCategoriesTool.handler(input, ctx);
     expect(result.totalMatches).toBeGreaterThanOrEqual(1);
-    expect(result.categories.some((c) => c.id === 'SA')).toBe(true);
+    expect(result.categories.some((c) => c.id === '3')).toBe(true);
   });
 
   it('filters by parent_code', () => {
     const ctx = createMockContext();
-    const input = listServiceCategoriesTool.input.parse({ parent_code: 'SA' });
+    const input = listServiceCategoriesTool.input.parse({ parent_code: '3' });
     const result = listServiceCategoriesTool.handler(input, ctx);
     expect(result.totalMatches).toBe(2);
-    expect(result.categories.every((c) => c.parent === 'SA')).toBe(true);
+    expect(result.categories.every((c) => c.parent === '3')).toBe(true);
   });
 
   it('applies limit', () => {
@@ -87,8 +87,8 @@ describe('listServiceCategoriesTool', () => {
   it('formats output with category IDs, descriptions, and parent codes', () => {
     const output = {
       categories: [
-        { id: 'SA', description: 'Transport services' },
-        { id: 'SAA', description: 'Sea transport', parent: 'SA' },
+        { id: '3', description: '3 Transport', parent: 'TOTAL' },
+        { id: '3.1', description: '3.1 Sea transport', parent: '3' },
       ],
       totalMatches: 2,
       shown: 2,
@@ -97,10 +97,10 @@ describe('listServiceCategoriesTool', () => {
     const blocks = listServiceCategoriesTool.format!(output);
     expect(blocks[0].type).toBe('text');
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('SA');
-    expect(text).toContain('Transport services');
+    expect(text).toContain('3');
+    expect(text).toContain('3 Transport');
     expect(text).toContain('Sea transport');
-    expect(text).toContain('SAA');
+    expect(text).toContain('3.1');
     expect(text).toContain('Parent:');
   });
 });

@@ -3,7 +3,7 @@
  * @module tests/tools/get-services-trade.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getServicesTradeTool } from '@/mcp-server/tools/definitions/get-services-trade.tool.js';
 import {
@@ -21,13 +21,36 @@ const SERVICES_RECORD = {
   partnerDesc: 'World',
   flowCode: 'X',
   cmdCode: 'SA',
-  cmdDesc: 'Transport services',
+  cmdDesc: 'Manufacturing services on physical inputs owned by others',
   period: '2022',
   primaryValue: 80_000_000_000,
   isReported: true,
 };
 
 describe('getServicesTradeTool', () => {
+  it('retains actual classification and reference failure on both surfaces', async () => {
+    vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockResolvedValue({
+      records: [
+        { ...SERVICES_RECORD, classificationCode: 'EB10', primaryValue: 0, isReported: false },
+      ],
+      totalCount: 1,
+      truncated: false,
+      referenceNotice: 'Reference unavailable; values retained.',
+    });
+    const result = await runToolContract(getServicesTradeTool, {
+      reporter_code: 840,
+      flow_code: 'X',
+      period: ['2022'],
+    });
+    expect(result.structuredContent).toMatchObject({
+      records: [
+        expect.objectContaining({ classificationCode: 'EB10', primaryValue: 0, isReported: false }),
+      ],
+      referenceNotice: 'Reference unavailable; values retained.',
+    });
+    expect(JSON.stringify(result.content)).toContain('EB10');
+    expect(JSON.stringify(result.content)).toContain('Reference unavailable; values retained.');
+  });
   let fetchMock: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -51,7 +74,7 @@ describe('getServicesTradeTool', () => {
     expect(result.truncated).toBe(false);
   });
 
-  it('passes typeCode=S and classificationCode=EB10 to the service', async () => {
+  it('passes typeCode=S and classificationCode=EB to the service', async () => {
     const ctx = createMockContext({ errors: getServicesTradeTool.errors });
     const input = getServicesTradeTool.input.parse({
       reporter_code: 840,
@@ -63,7 +86,7 @@ describe('getServicesTradeTool', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       expect.objectContaining({
         typeCode: 'S',
-        classificationCode: 'EB10',
+        classificationCode: 'EB',
         cmdCode: 'SA',
       }),
       expect.anything(),
@@ -133,7 +156,7 @@ describe('getServicesTradeTool', () => {
     expect(text).toContain('2022');
     expect(text).toContain('X');
     expect(text).toContain('SA');
-    expect(text).toContain('Transport services');
+    expect(text).toContain('Manufacturing services');
     expect(text).toContain('80,000,000,000');
   });
 

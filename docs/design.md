@@ -56,10 +56,10 @@ The server solves two friction points that make Comtrade hard to use programmati
 | Service | Wraps | Used By |
 |:--------|:------|:--------|
 | `ComtradeDataService` | `data/v1/get` and `public/v1/preview` trade data endpoints | `comtrade_get_trade_flows`, `comtrade_get_trade_balance`, `comtrade_get_top_partners`, `comtrade_get_top_commodities`, `comtrade_get_services_trade` |
-| `ComtradeReferenceService` | `files/v1/app/reference/*.json` static reference files | `comtrade_lookup_countries`, `comtrade_search_commodities`, `comtrade_list_service_categories`, both resources |
-| `ComtradeMetaService` | `public/v1/getDA` and `public/v1/getMetadata` availability endpoints | `comtrade_get_data_availability` |
+| `ComtradeReferenceService` | `files/v1/app/reference/*.json` static reference files | `comtrade_lookup_countries`, `comtrade_search_commodities`, `comtrade_list_service_categories`, country and HS resources |
+| `ComtradeMetaService` | `public/v1/getDA` availability endpoint | `comtrade_get_data_availability` |
 
-Countries, HS, and EBOPS references load at startup and remain in memory. SITC references load on first use by revision. Data and meta services make per-request calls with retry/backoff.
+Countries, current HS, and combined EB references load at startup and remain in memory. Historical HS, SITC, and quantity-unit references load on first use. Only successful lazy loads are cached; each caller retains its own cancellation boundary. Data and meta services make per-request calls with retry/backoff.
 
 ---
 
@@ -93,12 +93,11 @@ Each step is independently testable.
 | Noun | Operations | API endpoint |
 |:-----|:-----------|:-------------|
 | Country/area | lookup by name/ISO (reporters and partners via single tool with role filter) | `files/v1/app/reference/Reporters.json`, `partnerAreas.json` |
-| HS commodity | search by keyword/code, browse hierarchy | `files/v1/app/reference/HS.json` (+ H0–H6 editions) |
-| Service category (EBOPS) | list, search | `files/v1/app/reference/EB10.json` |
+| Goods commodity | search by keyword/code, browse HS hierarchy | `files/v1/app/reference/HS.json`, H0–H6, SS/S1–S4 |
+| Service category | list, search | `files/v1/app/reference/EB.json` |
 | Trade flow (goods) | get by reporter/partner/commodity/period/flow, balance, top-partners, top-commodities | `data/v1/get` (key) / `public/v1/preview` (no key) |
 | Trade flow (services) | get by reporter/partner/service-category/period/flow | `data/v1/get` with `typeCode=S` |
 | Data availability | check by reporter/period/classification | `public/v1/getDA` |
-| Dataset metadata | get publication notes, conversion factors | `public/v1/getMetadata` |
 
 ---
 
@@ -119,12 +118,16 @@ Each step is independently testable.
 | 1 | `data/v1/get?reporterCode={r}&cmdCode={code}&flowCode={X\|M}` without partner filter | API returns one row per partner — disaggregated breakdown |
 | — | local sort + slice | Sort by `primaryValue` descending, take top N, join partner names from reference cache |
 
-`comtrade_get_top_commodities` (1 upstream call + local sort):
+`comtrade_get_top_commodities` (TOTAL + edition reference + explicit category requests):
 
 | # | Call | Purpose |
 |:--|:-----|:--------|
-| 1 | `data/v1/get?reporterCode={r}&flowCode={X\|M}&partnerCode={0\|p}&cmdCode={AG2\|AG4}` | API returns one row per HS chapter (`AG2`) or heading (`AG4`). `aggrLevel` is not a query parameter — the preview endpoint ignores it |
-| — | local sort + slice | Sort by `primaryValue` descending, take top N, join HS descriptions from reference cache |
+| 1 | Matching `cmdCode=TOTAL` | Establish the reported HS edition and share denominator for the reporter, partner, flow, and annual/monthly period |
+| 2 | Matching edition's reference file | Enumerate chapter or heading codes, including special categories |
+| 3 | Explicit code lists in paced chunks | Query every category; recursively split raw-capped chunks, retaining unresolved codes when subdivision cannot establish completeness |
+| — | local sort + slice | Rank complete coverage only; shares use matching TOTAL and retrieved-category sums remain separate |
+
+One deadline covers the entire ranking workflow. A reference or TOTAL failure permits a disclosed aggregate-selector fallback; it does not establish completeness. Partial category retrieval keeps available values without ranks or shares. Caller cancellation and invalid input propagate.
 
 ---
 
@@ -140,19 +143,27 @@ Each step is independently testable.
 
 **`comtrade_get_top_commodities` added.** The partner-ranking tool (`comtrade_get_top_partners`) has no symmetric commodity-ranking counterpart. "What does Germany mainly export?" is an equally common workflow and was absent from the original surface.
 
-**Multi-period array input on data tools.** Authenticated requests preserve comma-separated periods. Preview accepts one period per request, so the service makes sequential requests and merges their records/counts. One shared pacer serializes export/import and other preview work with at least one second between starts, including retries. Repeated periods are served once. Partner deduplication uses period plus partner identity on both routes, preserving each period's largest-value fallback. Raw cap flags merge by OR, never by combined count. Cancellation stops queued and later work; failed periods fail the call rather than becoming empty successes.
+**Multi-period and reporter inputs.** Authenticated requests preserve comma-separated periods. Preview accepts one period per request, so the service makes sequential requests and merges their records/counts. One shared pacer serializes export/import and other preview work with at least one second between starts, including retries. Repeated periods are served once. Reporter arrays retain scalar compatibility; omitting the reporter requires an explicit partner. Deduplication includes reporter, period, partner, and commodity identity, preserving each reporter's records. Raw cap flags merge by OR, never by combined count. Cancellation stops queued and later work; failed periods fail the call rather than becoming empty successes.
 
-**Bounded read work.** Period/code arrays accept at most 120/200 inputs, serving the first 12/20 and naming the remaining inputs on both result surfaces. Output-only limits retain ordinary slices but accept larger values as no limit: above 200 for HS search, 500 for service categories, and 50 for rankings.
+**Bounded read work.** Period/code arrays accept at most 120/200 inputs, serving the first 12/20 and naming the remaining inputs on both result surfaces. Reporter arrays accept 200 inputs, deduplicate before serving 20, and name unserved reporters. Output-only limits retain ordinary slices but accept larger values as no limit: above 200 for commodity search, 500 for service categories, and 50 for rankings. Availability uses a stable dataset sort and explicit limit/offset pagination after fetching the matching upstream list; a small page reduces response size, not upstream read work.
 
-**SITC descriptions.** Goods flows/balance accept S1–S4 and SS in addition to HS editions. Revision-specific references load lazily and cache only completed successes, avoiding new startup or HS-request work. Unknown codes stay bare. A reference outage preserves trade values and emits `referenceNotice`; caller cancellation propagates. A load is bounded to 10 seconds including retries. HS search remains HS-only.
+**Edition-aware descriptions and units.** Goods flows/balance accept S1–S4 and SS in addition to HS editions. Commodity search loads the selected reference and preserves its native aggregation levels. Trade enrichment uses each row's actual classification, prefers supplied descriptions, and never substitutes the current HS catalog for an unknown historical edition. Quantity-unit references resolve numeric unit codes without guessing from commodity codes. Reference outages preserve values and emit `referenceNotice`; caller cancellation propagates. Each lazy load is bounded to 10 seconds including retries, inside the data request's shared deadline.
+
+**Keyless HS editions.** Explicit H0–H6 trade-data requests fail with a capability reason and recovery guidance because the preview endpoint does not support populated edition queries. `HS` remains as-reported data, not an automatic conversion. Reference discovery and availability keep their explicit-edition support.
+
+**Input grammar and upstream validation.** Normalize surrounding whitespace and supported casing. Annual periods use YYYY; monthly periods use YYYYMM with calendar-valid months and matching frequency. Services remain annual-only. Commodity grammar retains TOTAL, aggregation selectors, numeric codes, H0's legacy `9999AA`, and SITC memorandum codes with trailing `X`; unknown well-formed codes can return empty results. Availability classification identifiers remain open to upstream-supported values, including B4 and B5. Blank commodity entries are omitted. HTTP 400 errors expose only recognized validation details with a stable reason and recovery; malformed response envelopes fail rather than becoming empty data.
 
 **Availability classification and dates.** Omitted/blank classification resolves C→HS and S→EB10. Explicit values win. Optional `firstReleased` and `lastReleased` retain upstream strings independently; revision dates are never aliased to an unsupported `publicationDate` field.
+
+**Bilateral totals.** Balance accepts an explicit partner and uses the same partner for exports and imports. Goods queries with an explicit partner retain the top-level transport/customs/secondary-partner aggregate before arithmetic, preventing overlapping dimension rows from being added together. Output retains the reporter's perspective and identifies the partner.
 
 **`cmdCode=TOTAL` for country-level aggregates.** The API special-cases `TOTAL` to return the sum across all commodities. Tools that don't require commodity detail default to `TOTAL` rather than fetching and summing all HS codes client-side.
 
 **Reference data preloaded at startup — trade flow data is not cached.** Loading country, HS, and EBOPS references into in-memory indexes avoids per-request fetches and enables keyword search. Trade flow query results are not cached or stored by these services; each call fetches data from UN Comtrade.
 
 **Services trade as a separate tool.** Goods and services trade use the same `data/v1/get` endpoint but diverge in classification code scheme (HS vs. EBOPS) and conceptual framing. A single "get trade data" tool with a `type` enum would be valid but would obscure the classification lookup step — users of the services tool need `comtrade_list_service_categories`, not `comtrade_search_commodities`. The split makes the prerequisite chain unambiguous.
+
+Services retrieval uses combined `EB` and exposes the row's actual classification. The EB reference includes numeric and alphabetic schemes; code `3` means transport and `SA` manufacturing services. Imports are debits and exports credits from the reporter's perspective. Availability's EB10 default is independent of the retrieval route.
 
 ---
 
@@ -163,13 +174,17 @@ Key fields returned by data tools (implementer reference):
 | Field | Type | Meaning |
 |:------|:-----|:--------|
 | `primaryValue` | number (USD) | The main trade value — FOB for exports, CIF for imports. Use this for consistent cross-flow comparisons; do not use `fobvalue`/`cifvalue` directly since one will be null depending on flow direction. |
-| `fobvalue` | number\|null | Free-on-board value. Present for export flows; null for import flows. |
-| `cifvalue` | number\|null | Cost-insurance-freight value. Present for import flows; null for export flows. |
-| `qty` / `netWgt` | number\|null | Quantity in commodity-specific units / net weight in kg. Often null for aggregated or estimated rows. |
+| `fobvalue` | number, optional | Free-on-board value when supplied, typically on exports. |
+| `cifvalue` | number, optional | Cost-insurance-freight value when supplied, typically on imports. |
+| `qty` / `netWgt` | number, optional | Quantity in commodity-specific units / net weight in kg. Upstream nulls are omitted. |
+| `qtyUnitCode` / `qtyUnitAbbr` | number / string, optional | Upstream quantity unit identity; `-1` is unavailable, not a usable unit. |
+| `altQty` / `altQtyUnitCode` / `altQtyUnitAbbr` | number / number / string, optional | Alternate quantity and its own unit; zero values are preserved. |
+| `isQtyEstimated` / `isNetWgtEstimated` | boolean, optional | Independent estimation flags, preserving false and absence. |
+| `classificationCode` | string, optional | Actual classification returned on the upstream row. |
 | `cmdCode` | string | HS, SITC, or EBOPS code (or `"TOTAL"`). Descriptions use the selected classification; supplied upstream descriptions win. |
 | `reporterCode` / `partnerCode` | number | M49 numeric codes. Join names from reference cache. |
 | `isReported` | boolean | Whether the value is directly reported (`true`) or estimated/aggregated by UN (`false`). Surface this to callers — estimated values have lower reliability. |
-| `aggrLevel` | number\|null | Commodity aggregation level from upstream. HS rankings infer missing digit levels and exclude TOTAL/other levels. |
+| `aggrLevel` | number, optional | Commodity aggregation level from upstream. HS rankings infer missing digit levels and exclude TOTAL/other levels. |
 
 Record and ranking tools expose `truncated` when any raw preview response reaches 500, meaning possible incompleteness. `totalCount` is the sum of upstream counts before filtering, not the full match cardinality. Empty filtered outputs retain cap metadata. Balance emits a notice for capped inputs. Recovery recommends narrowing or authenticated access subject to upstream/subscription limits, never a promised numeric keyed retrieval size.
 
@@ -213,7 +228,7 @@ files/v1/app/reference/{filename}.json
 |:------|:-------|:------|
 | `typeCode` | `C` (commodities), `S` (services) | |
 | `freqCode` | `A` (annual), `M` (monthly) | Monthly: `YYYYMM` periods |
-| `classificationCode` | `HS`, `H0`–`H6`, `S1`–`S4`, `SS`, `EB10` | `HS` = combined across all editions; availability defaults services to EB10 |
+| `classificationCode` | `HS`, `H0`–`H6`, `S1`–`S4`, `SS`, `EB`/`EB10` | `HS` returns as-reported editions; services data uses EB, availability defaults to EB10 |
 | `flowCode` | `M`, `X`, `RX`, `RM`, `DX`, `FM` | M=import, X=export, RX=re-export, RM=re-import |
 | `reporterCode` | M49 numeric codes (e.g., `842`=USA, `156`=China) | From Reporters.json |
 | `partnerCode` | M49 numeric codes; `0`=World aggregate | From partnerAreas.json |

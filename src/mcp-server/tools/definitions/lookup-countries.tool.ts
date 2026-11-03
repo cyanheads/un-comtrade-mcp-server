@@ -65,7 +65,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
           })
           .describe('A country or area entry with its Comtrade M49 code and identifiers.'),
       )
-      .describe('Country/area entries matching the query, sorted by name.'),
+      .describe('Matching entries ordered by exact ISO identity, reporter validity, then name.'),
     totalMatches: z.number().describe('Total number of matching entries.'),
   }),
 
@@ -88,8 +88,6 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
     if (!input.include_groups) {
       results = results.filter((c) => !c.isGroup);
     }
-
-    results.sort((a, b) => a.name.localeCompare(b.name));
 
     if (results.length === 0) {
       ctx.enrich.notice(

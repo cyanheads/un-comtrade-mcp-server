@@ -155,12 +155,12 @@ describe('lookupCountriesTool', () => {
     expect(getEnrichment(ctx).notice).toContain('Zzyzxland');
   });
 
-  it('returns results sorted by name', async () => {
+  it('orders reporter-valid entries first, breaking ties by name', async () => {
     const ctx = createMockContext();
     const input = lookupCountriesTool.input.parse({ query: 'e' }); // matches Germany, United States, European Union, World
     const result = await lookupCountriesTool.handler(input, ctx);
     const names = result.matches.map((m) => m.name);
-    expect(names).toEqual([...names].sort());
+    expect(names).toEqual(['Germany', 'United States of America', 'European Union']);
   });
 
   it('formats output with codes, ISO identifiers, and reporter flag', () => {

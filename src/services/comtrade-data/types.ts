@@ -22,7 +22,7 @@ export interface TradeDataParams {
   /** Periods as YYYY (annual) or YYYYMM (monthly), joined as CSV. */
   period: string;
   /** M49 reporter code. */
-  reporterCode: number;
+  reporterCode?: number | number[];
   /** Type: C=commodities, S=services. */
   typeCode?: 'C' | 'S';
 }
@@ -31,8 +31,14 @@ export interface TradeDataParams {
 export interface TradeFlowRecord {
   /** Commodity aggregation level supplied by UN Comtrade. */
   aggrLevel?: number;
+  /** Alternate quantity and its independent unit. */
+  altQty?: number;
+  altQtyUnitAbbr?: string;
+  altQtyUnitCode?: number;
   /** CIF value (imports only). */
   cifvalue?: number;
+  /** Actual classification edition supplied on the upstream row. */
+  classificationCode?: string;
   /** HS, SITC, or EBOPS commodity/category code or "TOTAL". */
   cmdCode: string;
   /** Commodity description (joined from reference cache). */
@@ -43,6 +49,9 @@ export interface TradeFlowRecord {
   fobvalue?: number;
   /** Gross weight in kg. */
   grossWgt?: number;
+  isNetWgtEstimated?: boolean;
+  /** Upstream estimation flags, absent when not supplied. */
+  isQtyEstimated?: boolean;
   /** Whether directly reported (true) or estimated/aggregated (false). */
   isReported?: boolean;
   /** Net weight in kg. */
@@ -57,45 +66,11 @@ export interface TradeFlowRecord {
   primaryValue?: number;
   /** Quantity (in commodity-specific units). */
   qty?: number;
+  qtyUnitAbbr?: string;
+  /** Quantity unit identity and abbreviation; -1/N/A means unavailable. */
+  qtyUnitCode?: number;
   /** M49 reporter code. */
   reporterCode: number;
   /** Reporter name (joined from reference cache). */
   reporterDesc: string;
-}
-
-/** Raw trade flow row from the Comtrade API response. */
-export interface RawTradeRow {
-  aggrLevel?: number | null;
-  cifvalue?: number | null;
-  cmdCode?: string;
-  cmdDesc?: string;
-  /** Customs procedure code. "C00" is the top-level aggregate. */
-  customsCode?: string | null;
-  flowCode?: string;
-  fobvalue?: number | null;
-  grossWgt?: number | null;
-  /** True when this row is an aggregate across dimension breakdowns. */
-  isAggregate?: boolean | null;
-  isReported?: boolean | null;
-  /** Mode of transport code. 0 is the top-level aggregate. */
-  motCode?: number | null;
-  netWgt?: number | null;
-  /** Secondary partner consignment code. 0 is the top-level aggregate. */
-  partner2Code?: number | null;
-  partnerCode?: number;
-  partnerDesc?: string;
-  period?: string | number;
-  primaryValue?: number | null;
-  qty?: number | null;
-  reporterCode?: number;
-  reporterDesc?: string;
-}
-
-/** Raw API response envelope from Comtrade data endpoints. */
-export interface RawTradeResponse {
-  count?: number;
-  data?: RawTradeRow[];
-  error?: string | unknown;
-  message?: string;
-  validation?: unknown;
 }

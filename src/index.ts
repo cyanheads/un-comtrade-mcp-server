@@ -5,6 +5,7 @@
  * @module index
  */
 
+import { fileURLToPath } from 'node:url';
 import { createApp } from '@cyanheads/mcp-ts-core';
 import { getServerConfig } from './config/server-config.js';
 import { countriesResource } from './mcp-server/resources/definitions/countries.resource.js';
@@ -50,15 +51,10 @@ await createApp({
   ],
   resources: [countriesResource, hsClassificationResource],
   prompts: [],
+  skills: fileURLToPath(new URL('../skills/', import.meta.url)),
 
   instructions:
-    'UN Comtrade international trade statistics server. ' +
-    'Typical workflow: (1) comtrade_lookup_countries to resolve country names to M49 codes, ' +
-    '(2) comtrade_search_commodities to find HS codes by keyword, ' +
-    '(3) comtrade_get_data_availability to verify data exists for the target period, ' +
-    '(4) comtrade_get_trade_flows for raw bilateral records or a workflow tool (balance, top_partners, top_commodities). ' +
-    'Preview serves one period per upstream request, capped at 500 records; starts are paced at least one second apart. ' +
-    'Balance uses two requests per period. Set COMTRADE_SUBSCRIPTION_KEY for authenticated access subject to subscription limits.',
+    'UN Comtrade international goods and services trade statistics. Resolve country names with comtrade_lookup_countries, goods with comtrade_search_commodities, and services with comtrade_list_service_categories; check comtrade_get_data_availability before interpreting missing data. Reporter and partner identifiers are Comtrade numeric codes, not inferred ISO numbers. Keyless preview uses paced requests with a 500-record cap per upstream response; inspect coverage and unserved-input notices before drawing conclusions. Configure COMTRADE_SUBSCRIPTION_KEY for authenticated access subject to subscription limits. Load un-comtrade-guide for historical classifications, complete rankings, bilateral and mirror analysis, and unit-value interpretation.',
 
   async setup(core) {
     getServerConfig();

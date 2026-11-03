@@ -5,6 +5,15 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import {
+  codeSchema,
+  frequencySchema,
+  goodsClassificationSchema,
+  goodsCodesMatchClassification,
+  m49Schema,
+  periodSchema,
+  periodsMatchFrequency,
+} from '@/mcp-server/tools/comtrade-input.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 
 export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
@@ -18,29 +27,45 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
     'Uses comtrade_lookup_countries to resolve reporter codes.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
-  input: z.object({
-    reporter_code: z.number().int().describe('M49 numeric code of the reporting country.'),
-    period: z
-      .array(z.string().min(4))
-      .min(1)
-      .max(120)
-      .describe(
-        'Annual periods (YYYY) or monthly periods (YYYYMM). Serves the first 12 and discloses the remainder; input ceiling 120.',
-      ),
-    cmd_code: z
-      .array(z.string())
-      .max(200)
-      .optional()
-      .describe(
-        'HS or SITC commodity codes to restrict the balance calculation. Serves the first 20 and discloses the remainder; input ceiling 200. ' +
-          'Omit to compute the overall trade balance across all commodities.',
-      ),
-    classification: z
-      .enum(['HS', 'H0', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'S1', 'S2', 'S3', 'S4', 'SS'])
-      .default('HS')
-      .describe('Goods classification: HS/H0–H6 or SITC S1–S4/SS.'),
-    freq: z.enum(['A', 'M']).default('A').describe('Frequency: A=annual, M=monthly.'),
-  }),
+  input: z
+    .object({
+      reporter_code: m49Schema.describe('M49 numeric code of the reporting country (0–999).'),
+      partner_code: m49Schema
+        .default(0)
+        .describe(
+          'M49 partner code (0–999); defaults to World (0). The balance uses the reporter’s values.',
+        ),
+      period: z
+        .array(periodSchema)
+        .min(1)
+        .max(120)
+        .describe(
+          'Annual periods (YYYY) or monthly periods (YYYYMM). Serves the first 12 and discloses the remainder; input ceiling 120.',
+        ),
+      cmd_code: z
+        .array(codeSchema)
+        .max(200)
+        .optional()
+        .describe(
+          'HS or SITC commodity codes to restrict the balance calculation. Serves the first 20 and discloses the remainder; input ceiling 200. ' +
+            'Omit to compute the overall trade balance across all commodities.',
+        ),
+      classification: goodsClassificationSchema
+        .default('HS')
+        .describe('Goods classification: HS/H0–H6 or SITC S1–S4/SS.'),
+      freq: frequencySchema
+        .default('A')
+        .describe('Frequency: A=annual YYYY, M=monthly YYYYMM (01–12).'),
+    })
+    .refine(periodsMatchFrequency, {
+      path: ['period'],
+      message: 'Use YYYY for annual frequency or YYYYMM for monthly frequency.',
+    })
+    .refine(goodsCodesMatchClassification, {
+      path: ['cmd_code'],
+      message:
+        'Use HS codes with 2, 4 or 6 digits or legacy 9999AA; SITC codes have up to 5 characters with optional trailing X. TOTAL and classification-specific AG selectors are supported.',
+    }),
 
   output: z.object({
     periods: z
@@ -77,6 +102,12 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       .describe('Balance computation per period.'),
     reporterCode: z.number().describe('M49 reporter code used.'),
     reporterDesc: z.string().describe('Reporter country name.'),
+    partnerCode: z.number().describe('M49 partner code used.'),
+    partnerDesc: z
+      .string()
+      .describe(
+        'Partner name supplied by the returned records, or its numeric code when unavailable.',
+      ),
     cmdCodes: z
       .array(z.string())
       .optional()
@@ -108,6 +139,36 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
   },
   errors: [
     {
+      reason: 'keyless_hs_edition_unsupported',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Explicit HS editions require authenticated data access.',
+      recovery:
+        'Use HS for as-reported rows or configure authenticated access for an explicit edition.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_reporter_filter',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Reporter omission lacks an explicit partner.',
+      recovery: 'Supply one reporter_code for this balance query.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'upstream_validation',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'UN Comtrade rejects the query dimensions.',
+      recovery: 'Check reporter, partner, commodity and period before retrying.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_upstream_response',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'UN Comtrade returns malformed trade data.',
+      recovery: 'Retry later when UN Comtrade returns valid trade data.',
+      retryable: false,
+      thrownBy: 'service',
+    },
+    {
       reason: 'no_data',
       code: JsonRpcErrorCode.NotFound,
       when: 'No trade data available for the reporter and period combination.',
@@ -135,31 +196,35 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
 
     const svc = getComtradeDataService();
     const servedPeriods = input.period.slice(0, 12);
-    const codes = input.cmd_code?.slice(0, 20);
+    const normalizedCodes = input.cmd_code?.filter(Boolean);
+    const codes = normalizedCodes?.slice(0, 20);
     if (input.period.length > 12) ctx.enrich({ unservedPeriods: input.period.slice(12) });
-    if (input.cmd_code && input.cmd_code.length > 20)
-      ctx.enrich({ unservedCmdCodes: input.cmd_code.slice(20) });
+    if (normalizedCodes && normalizedCodes.length > 20)
+      ctx.enrich({ unservedCmdCodes: normalizedCodes.slice(20) });
     const periodStr = servedPeriods.join(',');
     const cmdCode = codes?.length ? codes.join(',') : 'TOTAL';
     const commonParams = {
       reporterCode: input.reporter_code,
       period: periodStr,
-      partnerCode: 0, // World aggregate
+      partnerCode: input.partner_code,
       cmdCode,
       classificationCode: input.classification,
       typeCode: 'C' as const,
       freqCode: input.freq,
     };
 
+    const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(55_000)]);
     const [exportResult, importResult] = await Promise.all([
-      svc.fetchTradeData({ ...commonParams, flowCode: 'X' }, ctx.signal),
-      svc.fetchTradeData({ ...commonParams, flowCode: 'M' }, ctx.signal),
+      svc.fetchTradeData({ ...commonParams, flowCode: 'X' }, signal),
+      svc.fetchTradeData({ ...commonParams, flowCode: 'M' }, signal),
     ]);
     if (exportResult.truncated || importResult.truncated)
       ctx.enrich.notice(
         'A preview response reached 500 records; balance values may be incomplete. Narrow the commodity query.',
       );
-    const referenceNotice = exportResult.referenceNotice ?? importResult.referenceNotice;
+    const referenceNotice = [
+      ...new Set([exportResult.referenceNotice, importResult.referenceNotice].filter(Boolean)),
+    ].join(' ');
     if (referenceNotice) ctx.enrich({ referenceNotice });
 
     // Get reporter name from either result
@@ -230,6 +295,11 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       periods,
       reporterCode: input.reporter_code,
       reporterDesc,
+      partnerCode: input.partner_code,
+      partnerDesc:
+        exportResult.records[0]?.partnerDesc ??
+        importResult.records[0]?.partnerDesc ??
+        String(input.partner_code),
       ...(codes?.length && { cmdCodes: codes }),
       mirrorCaveat:
         'Balance reflects values as reported by this country. Mirror asymmetry is common — the partner country may report different values for the same flow due to CIF/FOB valuation, timing, re-exports, and country definition differences.',
@@ -238,6 +308,7 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
 
   format: (result) => {
     const lines = [`## Trade Balance: ${result.reporterDesc} (code ${result.reporterCode})`];
+    lines.push(`**Partner:** ${result.partnerDesc} (code ${result.partnerCode})`);
     if (result.cmdCodes?.length) {
       lines.push(`**Commodities:** ${result.cmdCodes.join(', ')}`);
     }

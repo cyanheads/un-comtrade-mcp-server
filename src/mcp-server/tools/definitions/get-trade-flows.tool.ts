@@ -4,9 +4,34 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import {
+  codeSchema,
+  frequencySchema,
+  goodsClassificationSchema,
+  goodsCodesMatchClassification,
+  goodsFlowSchema,
+  m49Schema,
+  periodSchema,
+  periodsMatchFrequency,
+} from '@/mcp-server/tools/comtrade-input.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 
 const TradeFlowRecordSchema = z.object({
+  classificationCode: z
+    .string()
+    .optional()
+    .describe('Actual classification edition supplied by the row.'),
+  qtyUnitCode: z.number().optional().describe('Quantity unit code; -1 means unavailable.'),
+  qtyUnitAbbr: z
+    .string()
+    .optional()
+    .describe('Quantity unit abbreviation supplied or resolved from the unit catalog.'),
+  altQty: z.number().optional().describe('Alternate quantity, in its own unit.'),
+  altQtyUnitCode: z.number().optional().describe('Alternate quantity unit code.'),
+  altQtyUnitAbbr: z.string().optional().describe('Alternate quantity unit abbreviation.'),
+  isQtyEstimated: z.boolean().optional().describe('Whether quantity is estimated.'),
+  isNetWgtEstimated: z.boolean().optional().describe('Whether net weight is estimated.'),
   reporterCode: z.number().describe('M49 reporter code.'),
   reporterDesc: z.string().describe('Reporter country/area name.'),
   partnerCode: z.number().describe('M49 partner code.'),
@@ -46,49 +71,99 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
     'Use comtrade_lookup_countries to resolve reporter/partner codes and ' +
     'comtrade_search_commodities to resolve HS codes. For SITC, supply codes from the selected SITC revision.',
   annotations: { readOnlyHint: true, openWorldHint: true },
+  errors: [
+    {
+      reason: 'keyless_hs_edition_unsupported',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Explicit HS editions require authenticated data access.',
+      recovery:
+        'Use HS for as-reported rows or configure authenticated access for an explicit edition.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_reporter_filter',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Reporter omission lacks an explicit partner.',
+      recovery: 'Supply reporter_code or explicitly select partner_code for all reporters.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'upstream_validation',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'UN Comtrade rejects the query dimensions.',
+      recovery: 'Check reporter, partner, commodity, flow and period before retrying.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_upstream_response',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'UN Comtrade returns malformed trade data.',
+      recovery: 'Retry later when UN Comtrade returns valid trade data.',
+      retryable: false,
+      thrownBy: 'service',
+    },
+  ],
 
-  input: z.object({
-    reporter_code: z
-      .number()
-      .int()
-      .describe(
-        'M49 numeric code of the reporting country. Use comtrade_lookup_countries to resolve names to codes.',
+  input: z
+    .object({
+      reporter_code: z
+        .union([
+          m49Schema.describe('One M49 reporter code.'),
+          z.array(m49Schema).min(1).max(200).describe('Reporter codes to query together.'),
+        ])
+        .optional()
+        .describe(
+          'M49 reporter code or nonempty array (input ceiling 200). Deduplicates and serves the first 20 reporters, disclosing the remainder. Omit only with an explicit partner_code to query all reporters.',
+        ),
+      flow_code: goodsFlowSchema.describe(
+        'Trade flow direction: M=imports, X=exports, RX=re-exports, RM=re-imports.',
       ),
-    flow_code: z
-      .enum(['M', 'X', 'RX', 'RM'])
-      .describe('Trade flow direction: M=imports, X=exports, RX=re-exports, RM=re-imports.'),
-    period: z
-      .array(z.string().min(4))
-      .min(1)
-      .max(120)
-      .describe(
-        'One or more periods to query. Annual: "YYYY" (e.g. ["2022", "2023"]). ' +
-          'Monthly: "YYYYMM" (e.g. ["202201", "202202"]). Serves the first 12 periods and discloses the remainder; input ceiling 120.',
-      ),
-    partner_code: z
-      .number()
-      .int()
-      .optional()
-      .describe(
-        'M49 code of the trade partner. ' +
-          'Use 0 to aggregate across all partners (World total). ' +
-          'Omit to get a disaggregated breakdown by partner country.',
-      ),
-    cmd_code: z
-      .array(z.string())
-      .max(200)
-      .optional()
-      .describe(
-        'HS or SITC commodity codes to query. Serves the first 20 codes and discloses the remainder; input ceiling 200. ' +
-          'Pass ["TOTAL"] or omit to aggregate all commodities. ' +
-          'Use comtrade_search_commodities for HS codes only.',
-      ),
-    classification: z
-      .enum(['HS', 'H0', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'S1', 'S2', 'S3', 'S4', 'SS'])
-      .default('HS')
-      .describe('Goods classification: HS/H0–H6 or SITC S1–S4/SS. Defaults to combined HS.'),
-    freq: z.enum(['A', 'M']).default('A').describe('Frequency: A=annual, M=monthly.'),
-  }),
+      period: z
+        .array(periodSchema)
+        .min(1)
+        .max(120)
+        .describe(
+          'One or more periods to query. Annual: "YYYY" (e.g. ["2022", "2023"]). ' +
+            'Monthly: "YYYYMM" (e.g. ["202201", "202202"]). Serves the first 12 periods and discloses the remainder; input ceiling 120.',
+        ),
+      partner_code: m49Schema
+        .optional()
+        .describe(
+          'M49 code of the trade partner. ' +
+            'Use 0 to aggregate across all partners (World total). ' +
+            'Omit to get a disaggregated breakdown by partner country.',
+        ),
+      cmd_code: z
+        .array(codeSchema)
+        .max(200)
+        .optional()
+        .describe(
+          'HS or SITC commodity codes to query. Serves the first 20 codes and discloses the remainder; input ceiling 200. ' +
+            'Pass ["TOTAL"] or omit to aggregate all commodities. ' +
+            'Use comtrade_search_commodities for codes in the selected HS or SITC edition.',
+        ),
+      classification: goodsClassificationSchema
+        .default('HS')
+        .describe(
+          'Goods classification: HS as reported, H0–H6 with authenticated access, or SITC S1–S4/SS.',
+        ),
+      freq: frequencySchema
+        .default('A')
+        .describe('Frequency: A=annual YYYY, M=monthly YYYYMM (01–12).'),
+    })
+    .refine(periodsMatchFrequency, {
+      path: ['period'],
+      message: 'Use YYYY for annual frequency or YYYYMM for monthly frequency.',
+    })
+    .refine(goodsCodesMatchClassification, {
+      path: ['cmd_code'],
+      message:
+        'Use HS codes with 2, 4 or 6 digits or legacy 9999AA; SITC codes have up to 5 characters with optional trailing X. TOTAL and classification-specific AG selectors are supported.',
+    })
+    .refine((input) => input.reporter_code !== undefined || input.partner_code !== undefined, {
+      path: ['reporter_code'],
+      message: 'Supply a reporter or an explicit partner_code when querying all reporters.',
+    }),
 
   output: z.object({
     records: z
@@ -110,6 +185,10 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
   }),
 
   enrichment: {
+    unservedReporters: z
+      .array(z.number())
+      .optional()
+      .describe('Reporter codes beyond the 20-reporter work cap; query them separately.'),
     unservedPeriods: z
       .array(z.string())
       .optional()
@@ -131,6 +210,12 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
   },
 
   enrichmentTrailer: {
+    unservedReporters: {
+      render: (reporters) =>
+        reporters
+          ? `**Unserved reporters:** ${reporters.join(', ')}. Query them separately with reporter_code.`
+          : '',
+    },
     unservedPeriods: {
       render: (periods) =>
         periods ? `**Unserved periods:** ${periods.join(', ')}. Query them separately.` : '',
@@ -148,14 +233,22 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
     });
 
     const svc = getComtradeDataService();
+    const reporters = Array.isArray(input.reporter_code)
+      ? [...new Set(input.reporter_code)]
+      : input.reporter_code;
+    if (Array.isArray(reporters) && reporters.length > 20)
+      ctx.enrich({ unservedReporters: reporters.slice(20) });
     const periods = input.period.slice(0, 12);
-    const codes = input.cmd_code?.slice(0, 20);
+    const normalizedCodes = input.cmd_code?.filter(Boolean);
+    const codes = normalizedCodes?.slice(0, 20);
     if (input.period.length > 12) ctx.enrich({ unservedPeriods: input.period.slice(12) });
-    if (input.cmd_code && input.cmd_code.length > 20)
-      ctx.enrich({ unservedCmdCodes: input.cmd_code.slice(20) });
+    if (normalizedCodes && normalizedCodes.length > 20)
+      ctx.enrich({ unservedCmdCodes: normalizedCodes.slice(20) });
     const result = await svc.fetchTradeData(
       {
-        reporterCode: input.reporter_code,
+        ...(reporters !== undefined && {
+          reporterCode: Array.isArray(reporters) ? reporters.slice(0, 20) : reporters,
+        }),
         flowCode: input.flow_code,
         period: periods.join(','),
         ...(input.partner_code !== undefined && { partnerCode: input.partner_code }),
@@ -170,17 +263,10 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
 
     if (result.records.length === 0) {
       ctx.enrich.notice(
-        `No trade flow records found for reporter ${input.reporter_code}, ` +
+        `No trade flow records found for ${reporters === undefined ? 'all reporters' : `reporter ${Array.isArray(reporters) ? reporters.slice(0, 20).join(', ') : reporters}`}, ` +
           `flow=${input.flow_code}, periods=[${input.period.join(', ')}]. ` +
           `Use comtrade_get_data_availability to check if data exists for this period.`,
       );
-      return {
-        records: [],
-        totalCount: result.totalCount,
-        shown: 0,
-        truncated: result.truncated,
-        ...(result.truncationHint && { truncationHint: result.truncationHint }),
-      };
     }
 
     return {
@@ -205,6 +291,16 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
         `Commodity: ${r.cmdCode} — ${r.cmdDesc}` +
           (r.aggrLevel != null ? ` (aggregation level ${r.aggrLevel})` : ''),
       );
+      if (r.classificationCode !== undefined)
+        lines.push(`classificationCode: ${r.classificationCode}`);
+      if (r.qtyUnitCode !== undefined) lines.push(`qtyUnitCode: ${r.qtyUnitCode}`);
+      if (r.qtyUnitAbbr !== undefined) lines.push(`qtyUnitAbbr: ${r.qtyUnitAbbr}`);
+      if (r.altQty !== undefined) lines.push(`altQty: ${r.altQty}`);
+      if (r.altQtyUnitCode !== undefined) lines.push(`altQtyUnitCode: ${r.altQtyUnitCode}`);
+      if (r.altQtyUnitAbbr !== undefined) lines.push(`altQtyUnitAbbr: ${r.altQtyUnitAbbr}`);
+      if (r.isQtyEstimated !== undefined) lines.push(`isQtyEstimated: ${r.isQtyEstimated}`);
+      if (r.isNetWgtEstimated !== undefined)
+        lines.push(`isNetWgtEstimated: ${r.isNetWgtEstimated}`);
       if (r.primaryValue != null) {
         lines.push(`Primary Value: $${r.primaryValue.toLocaleString()} USD`);
       }

@@ -295,4 +295,212 @@ describe('trade data request and normalization boundaries', () => {
     expect(result.records.map((r) => r.period)).toEqual(['202201', '202202']);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+  it('rejects explicit HS editions before a keyless request', async () => {
+    fetchMock.mockResolvedValue(Response.json({ data: [] }));
+    await expect(svc.fetchTradeData({ ...params, classificationCode: 'H0' })).rejects.toMatchObject(
+      { data: { reason: 'keyless_hs_edition_unsupported' } },
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('retains each reporter and commodity when selecting bilateral aggregate rows', async () => {
+    fetchMock.mockResolvedValue(
+      Response.json({
+        data: [
+          { ...row, partnerCode: 156, cmdCode: '84' },
+          { ...row, partnerCode: 156, cmdCode: '84', motCode: 100, primaryValue: 100 },
+          { ...row, reporterCode: 276, partnerCode: 156, cmdCode: '84' },
+          { ...row, partnerCode: 156, cmdCode: '87' },
+        ],
+      }),
+    );
+    const result = await finish(
+      svc.fetchTradeData({
+        ...params,
+        reporterCode: [842, 276],
+        partnerCode: 156,
+        cmdCode: '84,87',
+      }),
+    );
+    expect(result.records.map((r) => [r.reporterCode, r.cmdCode, r.primaryValue])).toEqual([
+      [842, '84', 10],
+      [276, '84', 10],
+      [842, '87', 10],
+    ]);
+  });
+  it('does not collapse reporters in all-partner single-commodity data', async () => {
+    fetchMock.mockResolvedValue(
+      Response.json({ data: [{ ...row }, { ...row, reporterCode: 276 }] }),
+    );
+    expect(
+      (await finish(svc.fetchTradeData({ ...params, reporterCode: [842, 276] }))).records.map(
+        (r) => r.reporterCode,
+      ),
+    ).toEqual([842, 276]);
+  });
+  it('retains historical classification, lowercase level and quantity uncertainty', async () => {
+    fetchMock.mockImplementation(async (url) =>
+      String(url).endsWith('H0.json')
+        ? Response.json({ results: [{ id: '8524', text: 'Recorded media', aggrlevel: 4 }] })
+        : String(url).endsWith('QuantityUnits.json')
+          ? Response.json({
+              results: [
+                { qtyCode: 8, qtyAbbr: 'kg', qtyDescription: 'Weight' },
+                { qtyCode: -1, qtyAbbr: 'N/A', qtyDescription: 'Not available' },
+              ],
+            })
+          : Response.json({
+              data: [
+                {
+                  ...row,
+                  classificationCode: 'H0',
+                  cmdCode: '8524',
+                  aggrlevel: 4,
+                  qty: 0,
+                  qtyUnitCode: 8,
+                  altQty: 0,
+                  altQtyUnitCode: -1,
+                  isQtyEstimated: false,
+                  isNetWgtEstimated: true,
+                },
+              ],
+            }),
+    );
+    const result = await finish(svc.fetchTradeData({ ...params, partnerCode: 0 }));
+    expect(result.records[0]).toMatchObject({
+      classificationCode: 'H0',
+      cmdDesc: 'Recorded media',
+      aggrLevel: 4,
+      qty: 0,
+      qtyUnitCode: 8,
+      qtyUnitAbbr: 'kg',
+      altQty: 0,
+      altQtyUnitCode: -1,
+      altQtyUnitAbbr: 'N/A',
+      isQtyEstimated: false,
+      isNetWgtEstimated: true,
+    });
+  });
+  it('rejects malformed envelopes rather than disguising them as empty data', async () => {
+    fetchMock.mockResolvedValue(Response.json({ message: 'unexpected' }));
+    await expect(finish(svc.fetchTradeData(params))).rejects.toMatchObject({
+      data: { reason: 'invalid_upstream_response' },
+    });
+  });
+  it('relays known upstream validation detail without exposing raw payload fields', async () => {
+    fetchMock.mockResolvedValue(
+      Response.json(
+        {
+          error: 'Invalid parameter value',
+          details: [{ memberNames: ['period'], errorMessage: 'The field period is invalid' }],
+          secret: 'private-token',
+        },
+        { status: 400 },
+      ),
+    );
+    let failure: unknown;
+    try {
+      await finish(svc.fetchTradeData(params));
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: -32602,
+      message: expect.stringContaining('The field period is invalid'),
+      data: { reason: 'upstream_validation', recovery: { hint: expect.any(String) } },
+    });
+    expect(JSON.stringify(failure)).not.toContain('private-token');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('omits absent reporter filter and deduplicates array query identities', async () => {
+    fetchMock.mockImplementation(async () => Response.json({ data: [row] }));
+    await finish(svc.fetchTradeData({ flowCode: 'X', period: '2022', partnerCode: 0 }));
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).searchParams.has('reporterCode')).toBe(
+      false,
+    );
+    await finish(svc.fetchTradeData({ ...params, reporterCode: [842, 842, 276], partnerCode: 0 }));
+    expect(new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('reporterCode')).toBe(
+      '842,276',
+    );
+  });
+  it('never manufactures reporter identity from an array or omitted filter', async () => {
+    const { reporterCode: _reporterCode, ...withoutReporter } = row;
+    fetchMock.mockResolvedValue(Response.json({ data: [withoutReporter] }));
+    await expect(
+      finish(svc.fetchTradeData({ ...params, reporterCode: [842, 276], partnerCode: 0 })),
+    ).rejects.toMatchObject({ data: { reason: 'invalid_upstream_response' } });
+  });
+  it('retains upstream labels and unknown unit codes without reference fetches', async () => {
+    fetchMock.mockResolvedValue(
+      Response.json({
+        data: [
+          {
+            ...row,
+            classificationCode: 'H0',
+            cmdCode: '8524',
+            cmdDesc: 'upstream',
+            qtyUnitCode: 999,
+            qtyUnitAbbr: 'upstream unit',
+            isQtyEstimated: false,
+          },
+        ],
+      }),
+    );
+    const result = await finish(svc.fetchTradeData({ ...params, partnerCode: 0 }));
+    expect(result.records[0]).toMatchObject({
+      cmdDesc: 'upstream',
+      qtyUnitCode: 999,
+      qtyUnitAbbr: 'upstream unit',
+      isQtyEstimated: false,
+    });
+    expect(result.records[0]).not.toHaveProperty('altQty');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('degrades failed unit enrichment while preserving quantities and codes', async () => {
+    fetchMock.mockImplementation(async (url) =>
+      String(url).endsWith('QuantityUnits.json')
+        ? new Response('missing', { status: 404 })
+        : Response.json({
+            data: [
+              {
+                ...row,
+                qtyUnitCode: 999,
+                qty: 0,
+                altQtyUnitCode: -1,
+                altQty: 0,
+                isQtyEstimated: false,
+              },
+            ],
+          }),
+    );
+    const result = await finish(svc.fetchTradeData({ ...params, partnerCode: 0 }));
+    expect(result.records[0]).toMatchObject({
+      qtyUnitCode: 999,
+      qty: 0,
+      altQtyUnitCode: -1,
+      altQty: 0,
+      isQtyEstimated: false,
+    });
+    expect(result.records[0]).not.toHaveProperty('qtyUnitAbbr');
+    expect(result.referenceNotice).toContain('Quantity unit references are unavailable');
+  });
+  it('does not label unknown HS editions from the modern startup catalog', async () => {
+    fetchMock.mockResolvedValue(
+      Response.json({ data: [{ ...row, cmdCode: '8524', classificationCode: 'H9' }] }),
+    );
+    const result = await finish(svc.fetchTradeData({ ...params, partnerCode: 0 }));
+    expect(result.records[0]).toMatchObject({
+      cmdCode: '8524',
+      cmdDesc: '8524',
+      classificationCode: 'H9',
+    });
+    expect(result.referenceNotice).toContain('H9 reference descriptions are unavailable');
+  });
+  it('allows authenticated explicit editions without changing the requested classification', async () => {
+    settings.subscriptionKey = 'test-key';
+    fetchMock.mockResolvedValue(Response.json({ data: [] }));
+    expect(
+      (await finish(svc.fetchTradeData({ ...params, classificationCode: 'H0' }))).records,
+    ).toEqual([]);
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe('/data/v1/get/C/A/H0');
+  });
 });

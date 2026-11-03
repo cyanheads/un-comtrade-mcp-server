@@ -1,5 +1,5 @@
 /**
- * @fileoverview Tool for listing EBOPS 2010 service trade categories.
+ * @fileoverview Tool for listing combined EB service trade categories.
  * @module mcp-server/tools/definitions/list-service-categories.tool
  */
 
@@ -7,13 +7,9 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 export const listServiceCategoriesTool = tool('comtrade_list_service_categories', {
-  title: 'List Service Trade Categories (EBOPS)',
+  title: 'List Service Trade Categories (EB)',
   description:
-    'List EBOPS 2010 service trade categories — the equivalent of comtrade_search_commodities ' +
-    'for the services domain. Returns category codes, descriptions, and parent codes. ' +
-    'Filter by keyword to find a specific service type (e.g. "transport", "financial", "travel"), ' +
-    'or browse from a parent category code. Use the returned id as service_code in ' +
-    'comtrade_get_services_trade.',
+    'List service trade categories from the combined EB catalog, including numeric EBOPS and SDMX codes. Returns category codes, descriptions, and parent codes. Filter by keyword (e.g. "transport", "financial", "travel") or browse direct children of a parent code. Use the returned id as service_code in comtrade_get_services_trade. Code 3 is transport; SA is manufacturing services.',
   annotations: { readOnlyHint: true, openWorldHint: false },
 
   input: z.object({
@@ -21,16 +17,13 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
       .string()
       .optional()
       .describe(
-        'Keyword or category code prefix to filter results. ' +
-          'Examples: "transport", "SA", "financial services". ' +
-          'Omit to list all EBOPS categories.',
+        'Keyword or category code prefix to filter results. Examples: "transport", "SA", "financial services". Omit to list all EB categories.',
       ),
     parent_code: z
       .string()
       .optional()
       .describe(
-        'Return only sub-categories of this parent EBOPS code. ' +
-          'Example: "SA" to see all transport service sub-categories.',
+        'Return direct children of this EB category code. Example: "3" for transport sub-categories, or "3.1" for sea transport sub-categories.',
       ),
     limit: z
       .number()
@@ -51,9 +44,9 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
             description: z.string().describe('Category description.'),
             parent: z.string().optional().describe('Parent EBOPS category code, if any.'),
           })
-          .describe('An EBOPS 2010 service trade category.'),
+          .describe('A service trade category from the combined EB catalog.'),
       )
-      .describe('EBOPS 2010 service categories matching the query.'),
+      .describe('EB service categories matching the query.'),
     totalMatches: z.number().describe('Total matching categories before limit truncation.'),
     shown: z.number().describe('Number of categories returned.'),
     truncated: z
@@ -122,7 +115,7 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
 
   format: (result) => {
     const lines = [
-      `## EBOPS 2010 Service Categories`,
+      `## EB Service Categories`,
       `**Matches:** ${result.totalMatches} | **Shown:** ${result.shown} | **Truncated:** ${result.truncated ? 'yes' : 'no'}`,
     ];
     for (const c of result.categories) {

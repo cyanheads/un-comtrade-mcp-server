@@ -96,13 +96,8 @@ describe('getTopPartnersTool', () => {
       limit: 2,
     });
     const result = await getTopPartnersTool.handler(input, ctx);
-    const total = result.totalValueUsd ?? 0;
-    if (total > 0 && result.partners[0]?.sharePercent != null) {
-      expect(result.partners[0].sharePercent).toBeCloseTo(
-        (300_000_000 / (120_000_000 + 300_000_000)) * 100,
-        1,
-      );
-    }
+    expect(result.totalValueUsd).toBe(420_000_000);
+    expect(result.partners[0]?.sharePercent).toBe(71.43);
   });
 
   it('respects the limit parameter', async () => {

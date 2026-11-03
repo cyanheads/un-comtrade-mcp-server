@@ -63,6 +63,103 @@ describe('getTradeBalanceTool', () => {
     expect(p.coverageRatio).toBeCloseTo(2 / 3, 3);
   });
 
+  it.each([undefined, 0, 276])(
+    'forwards bilateral partner %s to both flows and echoes it on both surfaces',
+    async (partner_code) => {
+      const partnerCode = partner_code ?? 0;
+      const partnerDesc = partnerCode === 0 ? 'World' : 'Germany';
+      fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
+        Promise.resolve({
+          records: [
+            { ...(flowCode === 'X' ? EXPORT_RECORD : IMPORT_RECORD), partnerCode, partnerDesc },
+          ],
+          totalCount: 1,
+          truncated: false,
+        }),
+      );
+      const result = await runToolContract(getTradeBalanceTool, {
+        reporter_code: 840,
+        partner_code,
+        period: ['2022'],
+      });
+      expect(result.isError).not.toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      for (const [params] of fetchMock.mock.calls) expect(params).toMatchObject({ partnerCode });
+      expect(fetchMock.mock.calls[0]?.[1]).toBe(fetchMock.mock.calls[1]?.[1]);
+      expect(result.structuredContent).toMatchObject({
+        partnerCode,
+        partnerDesc,
+        periods: [{ balanceUsd: -1_000_000_000 }],
+      });
+      expect(JSON.stringify(result.content)).toContain(
+        `**Partner:** ${partnerDesc} (code ${partnerCode})`,
+      );
+    },
+  );
+
+  it('keeps commodity sums and partial-flow period alignment for a bilateral query', async () => {
+    fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
+      Promise.resolve({
+        records:
+          flowCode === 'X'
+            ? [
+                {
+                  ...EXPORT_RECORD,
+                  partnerCode: 276,
+                  partnerDesc: 'Germany',
+                  cmdCode: '84',
+                  primaryValue: 30,
+                },
+                {
+                  ...EXPORT_RECORD,
+                  partnerCode: 276,
+                  partnerDesc: 'Germany',
+                  cmdCode: '85',
+                  primaryValue: 20,
+                },
+              ]
+            : [
+                {
+                  ...IMPORT_RECORD,
+                  partnerCode: 276,
+                  partnerDesc: 'Germany',
+                  cmdCode: '84',
+                  primaryValue: 10,
+                  period: '2023',
+                },
+              ],
+        totalCount: flowCode === 'X' ? 2 : 1,
+        truncated: false,
+      }),
+    );
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      partner_code: 276,
+      period: ['2022', '2023'],
+      cmd_code: ['84', '85'],
+    });
+    expect(result.structuredContent).toMatchObject({
+      partnerCode: 276,
+      cmdCodes: ['84', '85'],
+      periods: [
+        {
+          period: '2022',
+          exportsUsd: 50,
+          balanceUsd: 50,
+          note: 'Export data only; no import data found for this period.',
+        },
+        {
+          period: '2023',
+          importsUsd: 10,
+          balanceUsd: -10,
+          note: 'Import data only; no export data found for this period.',
+        },
+      ],
+    });
+    for (const text of ['2022', '2023', 'Export data only', 'Import data only', '84, 85'])
+      expect(JSON.stringify(result.content)).toContain(text);
+  });
+
   it('marks surplus when exports > imports', async () => {
     fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
       Promise.resolve({
@@ -117,7 +214,13 @@ describe('getTradeBalanceTool', () => {
   });
 
   it('advertises only the reasons a code path can produce', () => {
-    expect(getTradeBalanceTool.errors?.map((e) => e.reason)).toEqual(['no_data']);
+    expect(getTradeBalanceTool.errors?.map((e) => e.reason)).toEqual([
+      'keyless_hs_edition_unsupported',
+      'invalid_reporter_filter',
+      'upstream_validation',
+      'invalid_upstream_response',
+      'no_data',
+    ]);
   });
 
   it('carries the declared no_data recovery hint on both consumption surfaces', async () => {
@@ -174,6 +277,28 @@ describe('getTradeBalanceTool', () => {
     expect(result.mirrorCaveat.toLowerCase()).toContain('mirror');
   });
 
+  it('preserves distinct reference notices from both trade directions', async () => {
+    fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
+      Promise.resolve({
+        records: [flowCode === 'X' ? EXPORT_RECORD : IMPORT_RECORD],
+        totalCount: 1,
+        truncated: false,
+        referenceNotice:
+          flowCode === 'X' ? 'H0 descriptions unavailable.' : 'Quantity units unavailable.',
+      }),
+    );
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2022'],
+    });
+    expect(result.structuredContent).toMatchObject({
+      referenceNotice: 'H0 descriptions unavailable. Quantity units unavailable.',
+    });
+    expect(JSON.stringify(result.content)).toContain(
+      'H0 descriptions unavailable. Quantity units unavailable.',
+    );
+  });
+
   it('formats output with period, exports, imports, balance, coverage ratio, and mirror caveat', () => {
     const output = {
       periods: [
@@ -187,6 +312,8 @@ describe('getTradeBalanceTool', () => {
       ],
       reporterCode: 840,
       reporterDesc: 'United States of America',
+      partnerCode: 0,
+      partnerDesc: 'World',
       mirrorCaveat:
         'Balance reflects values as reported by this country. Mirror asymmetry is common.',
     };

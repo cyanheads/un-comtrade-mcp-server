@@ -40,7 +40,7 @@ const record = {
   aggrLevel: 2,
 };
 const periods = Array.from({ length: 13 }, (_, i) => String(2000 + i));
-const codes = Array.from({ length: 21 }, (_, i) => String(i));
+const codes = Array.from({ length: 21 }, (_, i) => String(i).padStart(2, '0'));
 beforeEach(() => {
   initComtradeDataService(config, storage);
   initComtradeMetaService(config, storage);
@@ -265,15 +265,27 @@ it.each([
   }
 });
 it('output-only oversized limits return all matches and rankings', async () => {
-  vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockResolvedValue({
-    records: Array.from({ length: 60 }, (_, i) => ({
-      ...record,
-      partnerCode: i + 1,
-      cmdCode: String(i + 10),
-    })),
-    totalCount: 60,
-    truncated: false,
+  const rankingRows = Array.from({ length: 60 }, (_, i) => ({
+    ...record,
+    partnerCode: i + 1,
+    cmdCode: String(i + 10),
+    classificationCode: 'H6',
+  }));
+  vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockImplementation(async (params) => {
+    const records =
+      params.cmdCode === 'TOTAL' && params.partnerCode === 0
+        ? [{ ...record, cmdCode: 'TOTAL', classificationCode: 'H6', primaryValue: 600 }]
+        : rankingRows;
+    return { records, totalCount: records.length, truncated: false };
   });
+  vi.spyOn(ComtradeReferenceService.prototype, 'getCommodityCodes').mockResolvedValue(
+    new Map(
+      rankingRows.map((row) => [
+        row.cmdCode,
+        { id: row.cmdCode, text: row.cmdDesc, aggrLevel: 2, isLeaf: false },
+      ]),
+    ),
+  );
   vi.spyOn(ComtradeReferenceService.prototype, 'searchHsCodes').mockReturnValue(
     Array.from({ length: 220 }, (_, i) => ({
       id: String(i),

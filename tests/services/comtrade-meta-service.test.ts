@@ -65,3 +65,42 @@ it('preserves independent release dates and omits absent dates', async () => {
   expect(rows[3]).not.toHaveProperty('lastReleased');
   expect(rows[0]).not.toHaveProperty('publicationDate');
 });
+
+it('renders upstream validation detail without retaining the raw response', async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+    Response.json(
+      {
+        message: 'For annual frequency, all periods must be in YYYY format.',
+        debug: 'subscription-key=private-value',
+      },
+      { status: 400 },
+    ),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  const request = new ComtradeMetaService(config, storage).getDataAvailability({
+    period: '202503',
+  });
+  await expect(request).rejects.toMatchObject({
+    data: {
+      reason: 'upstream_validation',
+      upstreamDetail: 'For annual frequency, all periods must be in YYYY format.',
+    },
+    message: expect.stringContaining('YYYY format'),
+  });
+  await request.catch((error: unknown) => {
+    expect(JSON.stringify(error)).not.toContain('private-value');
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it.each([{ message: 'not a data envelope' }, { data: [{ totalRecords: 'invalid' }] }])(
+  'rejects malformed metadata instead of claiming empty availability',
+  async (body) => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(body));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      new ComtradeMetaService(config, storage).getDataAvailability({}),
+    ).rejects.toMatchObject({ data: { reason: 'invalid_upstream_response' } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  },
+);

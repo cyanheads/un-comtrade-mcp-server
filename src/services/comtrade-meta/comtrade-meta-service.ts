@@ -5,11 +5,13 @@
  */
 
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { fetchWithTimeout, requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
+import { upstreamValidationError } from '@/services/comtrade-data/upstream-validation-error.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
-import type { DataAvailabilityRecord, RawAvailabilityResponse } from './types.js';
+import { type DataAvailabilityRecord, rawAvailabilitySchema } from './types.js';
 
 const FETCH_TIMEOUT_MS = 30_000;
 
@@ -51,30 +53,42 @@ export class ComtradeMetaService {
     const qs = queryParams.toString();
     const url = qs ? `${endpoint}?${qs}` : endpoint;
 
-    const raw = await withRetry(
-      async () => {
+    const text = await withRetry(
+      async ({ signal: attemptSignal }) => {
         const headers: Record<string, string> = serverConfig.subscriptionKey
           ? { 'Ocp-Apim-Subscription-Key': serverConfig.subscriptionKey }
           : {};
         const fetchCtx = requestContextService.createRequestContext({
           operation: 'ComtradeMetaService.getDataAvailability',
         });
-        const fetchOpts = { headers, ...(signal && { signal }) };
-        const response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS, fetchCtx, fetchOpts);
-        const text = await response.text();
-        if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
-          throw new Error('Comtrade metadata API returned HTML — service may be unavailable.');
+        const fetchOpts = { headers, signal: attemptSignal };
+        try {
+          const response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS, fetchCtx, fetchOpts);
+          return await response.text();
+        } catch (error) {
+          throw upstreamValidationError(error);
         }
-        return JSON.parse(text) as RawAvailabilityResponse;
       },
       {
         operation: 'ComtradeMetaService.getDataAvailability',
         baseDelayMs: 1500,
+        deadlineMs: 52_000,
         ...(signal && { signal }),
       },
     );
 
-    const rows = raw.data ?? [];
+    let raw: ReturnType<typeof rawAvailabilitySchema.parse>;
+    try {
+      raw = rawAvailabilitySchema.parse(JSON.parse(text));
+    } catch (cause) {
+      throw new McpError(
+        JsonRpcErrorCode.SerializationError,
+        'UN Comtrade returned an invalid availability response. Retry later or query a different reporter and period.',
+        { reason: 'invalid_upstream_response' },
+        { cause },
+      );
+    }
+    const rows = raw.data;
     const ref = getComtradeReferenceService();
 
     return rows.map((row) => {

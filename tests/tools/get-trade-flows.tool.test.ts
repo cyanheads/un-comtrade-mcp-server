@@ -3,7 +3,7 @@
  * @module tests/tools/get-trade-flows.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTradeFlowsTool } from '@/mcp-server/tools/definitions/get-trade-flows.tool.js';
 import {
@@ -40,6 +40,105 @@ const RECORD_SPARSE = {
 };
 
 describe('getTradeFlowsTool', () => {
+  it('preserves quantity and classification metadata on both surfaces', async () => {
+    const values = {
+      classificationCode: 'H0',
+      qty: 0,
+      qtyUnitCode: 8,
+      qtyUnitAbbr: 'kg',
+      altQty: 0,
+      altQtyUnitCode: 5,
+      altQtyUnitAbbr: 'u',
+      isQtyEstimated: false,
+      isNetWgtEstimated: false,
+    };
+    vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockResolvedValue({
+      records: [{ ...RECORD_USA_DEU, ...values }],
+      totalCount: 1,
+      truncated: false,
+    });
+    const result = await runToolContract(getTradeFlowsTool, {
+      reporter_code: 840,
+      flow_code: 'X',
+      period: ['2022'],
+    });
+    expect(result.structuredContent).toMatchObject({ records: [expect.objectContaining(values)] });
+    for (const value of [
+      'H0',
+      'qtyUnitCode: 8',
+      'kg',
+      'altQty: 0',
+      'altQtyUnitCode: 5',
+      'altQtyUnitAbbr: u',
+      'isQtyEstimated: false',
+      'isNetWgtEstimated: false',
+    ])
+      expect(JSON.stringify(result.content)).toContain(value);
+  });
+  it('deduplicates reporters, serves 20, and discloses unserved reporters', async () => {
+    const spy = vi
+      .spyOn(ComtradeDataService.prototype, 'fetchTradeData')
+      .mockResolvedValue({ records: [RECORD_USA_DEU], totalCount: 1, truncated: false });
+    const result = await runToolContract(getTradeFlowsTool, {
+      reporter_code: [1, 1, ...Array.from({ length: 20 }, (_, i) => i + 2)],
+      flow_code: 'X',
+      period: ['2022'],
+    });
+    expect(result.isError).not.toBe(true);
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({ reporterCode: Array.from({ length: 20 }, (_, i) => i + 1) }),
+      expect.anything(),
+    );
+    expect(result.structuredContent).toMatchObject({ unservedReporters: [21] });
+    expect(JSON.stringify(result.content)).toContain('21');
+    expect(JSON.stringify(result.content)).toContain('Query them separately');
+  });
+  it('allows reporter omission only with explicit partner', async () => {
+    const spy = vi
+      .spyOn(ComtradeDataService.prototype, 'fetchTradeData')
+      .mockResolvedValue({ records: [], totalCount: 0, truncated: false });
+    expect(getTradeFlowsTool.input.safeParse({ flow_code: 'X', period: ['2022'] }).success).toBe(
+      false,
+    );
+    const result = await runToolContract(getTradeFlowsTool, {
+      partner_code: 0,
+      flow_code: 'X',
+      period: ['2022'],
+    });
+    expect(result.isError).not.toBe(true);
+    expect(spy.mock.calls[0]?.[0]).not.toHaveProperty('reporterCode');
+    expect(JSON.stringify(result.structuredContent)).not.toContain('undefined');
+    expect(JSON.stringify(result.content)).not.toContain('undefined');
+    expect(
+      getTradeFlowsTool.input.safeParse({ reporter_code: [], flow_code: 'X', period: ['2022'] })
+        .success,
+    ).toBe(false);
+    expect(
+      getTradeFlowsTool.input.safeParse({
+        reporter_code: Array(201).fill(1),
+        flow_code: 'X',
+        period: ['2022'],
+      }).success,
+    ).toBe(false);
+  });
+  it('does not disclose unserved reporters when duplicates reduce an input to the served bound', async () => {
+    const spy = vi
+      .spyOn(ComtradeDataService.prototype, 'fetchTradeData')
+      .mockResolvedValue({ records: [], totalCount: 0, truncated: false });
+    const result = await runToolContract(getTradeFlowsTool, {
+      reporter_code: Array(200).fill(842),
+      flow_code: 'X',
+      period: ['2022'],
+      cmd_code: [' ', ''],
+    });
+    expect(result.isError).not.toBe(true);
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({ reporterCode: [842], cmdCode: 'TOTAL' }),
+      expect.anything(),
+    );
+    expect(result.structuredContent).not.toHaveProperty('unservedReporters');
+    expect(JSON.stringify(result.content)).not.toContain('Unserved reporters');
+  });
   let fetchMock: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {

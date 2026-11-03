@@ -3,37 +3,7 @@
  * @module services/comtrade-reference/types
  */
 
-/** A reporter (country/area that submitted data to Comtrade). */
-export interface Reporter {
-  /** Entry type — reporter entries are always "reporter" in the raw file. */
-  entryEffectiveDate?: string;
-  /** Whether this code was still active (null = no end date = active). */
-  entryExpiredDate?: string;
-  /** M49 numeric code used in all Comtrade API calls. */
-  id: number;
-  /** Whether this area can be used as a reporter code in data queries. */
-  isGroup: boolean;
-  /** ISO alpha-2 code, when available. */
-  iso2?: string;
-  /** ISO alpha-3 code, when available. */
-  iso3?: string;
-  /** Display name (English). */
-  text: string;
-}
-
-/** A partner area (origin/destination in bilateral flows). */
-export interface PartnerArea {
-  /** M49 numeric code. Partner code 0 = World aggregate. */
-  id: number;
-  /** Whether this area is a geographic grouping (not a single country). */
-  isGroup: boolean;
-  /** ISO alpha-2 code, when available. */
-  iso2?: string;
-  /** ISO alpha-3 code, when available. */
-  iso3?: string;
-  /** Display name (English). */
-  text: string;
-}
+import { z } from '@cyanheads/mcp-ts-core';
 
 /** A normalized country/area entry combining reporter and partner dimensions. */
 export interface CountryEntry {
@@ -67,7 +37,7 @@ export interface HsCode {
   text: string;
 }
 
-/** An EBOPS 2010 service trade category. */
+/** A service category from the combined EB reference catalog. */
 export interface EbopsCategory {
   /** EBOPS category code, e.g. "SA". */
   id: string;
@@ -77,41 +47,74 @@ export interface EbopsCategory {
   text: string;
 }
 
-/** Raw entry from the UN Comtrade reporter JSON file. */
-export interface RawReporterEntry {
-  entryEffectiveDate?: string;
-  entryExpiredDate?: string;
-  isGroup?: boolean | string | number;
-  reporterCode: number;
-  reporterCodeIsoAlpha3?: string;
-  reporterDesc: string;
-  reporterNote?: string;
-}
+/** Fields used from the UN Comtrade reporter reference file. */
+export const rawReporterSchema = z.object({
+  reporterCode: z.number(),
+  reporterDesc: z.string(),
+  reporterCodeIsoAlpha2: z.string().optional(),
+  reporterCodeIsoAlpha3: z.string().optional(),
+  isGroup: z.union([z.boolean(), z.string(), z.number()]).optional(),
+});
 
-/** Raw entry from the UN Comtrade partnerAreas JSON file. */
-export interface RawPartnerEntry {
-  entryEffectiveDate?: string;
-  entryExpiredDate?: string;
-  isGroup?: boolean | string | number;
-  PartnerCode: number;
-  PartnerCodeIsoAlpha3?: string;
-  PartnerDesc: string;
-  partnerNote?: string;
-}
+/** Fields used from the UN Comtrade partner reference file. */
+export const rawPartnerSchema = z.object({
+  PartnerCode: z.number(),
+  PartnerDesc: z.string(),
+  PartnerCodeIsoAlpha2: z.string().optional(),
+  PartnerCodeIsoAlpha3: z.string().optional(),
+  isGroup: z.union([z.boolean(), z.string(), z.number()]).optional(),
+});
 
-/** Raw entry from the UN Comtrade HS reference JSON file. */
-export interface RawHsEntry {
-  aggrLevel?: number;
+/** Native commodity catalog fields; old editions spell aggregation as aggrlevel. */
+export const rawHsSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  aggrLevel: z.number().optional(),
+  aggrlevel: z.number().optional(),
+  parent: z.string().optional(),
+  isLeaf: z.union([z.number(), z.boolean(), z.string()]).optional(),
+});
+
+/** A parsed upstream commodity entry. */
+export type RawHsEntry = z.infer<typeof rawHsSchema>;
+
+/** Fields used from the combined EB reference file. */
+export const rawEbopsSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  parent: z.string().optional(),
+});
+
+/** Goods catalog names supported by UN Comtrade's reference endpoint. */
+export const COMMODITY_CLASSIFICATIONS = [
+  'HS',
+  'H0',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'SS',
+  'S1',
+  'S2',
+  'S3',
+  'S4',
+] as const;
+
+/** A commodity catalog entry retaining its native aggregation level. */
+export interface CommodityCode {
+  aggrLevel: number;
   id: string;
-  isLeaf?: number | boolean | string;
+  isLeaf: boolean;
   parent?: string;
+  recommendedQueryCode: string;
   text: string;
 }
 
-/** Raw entry from the UN Comtrade EBOPS reference JSON file. */
-export interface RawEbopsEntry {
-  aggrLevel?: number;
-  id: string;
-  parent?: string;
-  text: string;
+/** A quantity unit keyed by the numeric qtyCode on trade records; -1 means unavailable. */
+export interface QuantityUnit {
+  qtyAbbr: string;
+  qtyCode: number;
+  qtyDescription: string;
 }

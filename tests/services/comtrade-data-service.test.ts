@@ -45,6 +45,14 @@ function seedReferenceService(): ComtradeReferenceService {
     [528, { id: 528, name: 'Netherlands', validAsReporter: true, isGroup: false }],
     [0, { id: 0, name: 'World', validAsReporter: false, isGroup: true }],
   ]);
+  vi.spyOn(svc, 'getCommodityCodes').mockResolvedValue(
+    new Map([
+      [
+        '10',
+        { id: '10', text: '10 - Cereals', aggrLevel: 2, isLeaf: false, recommendedQueryCode: '10' },
+      ],
+    ]),
+  );
   return svc;
 }
 
@@ -460,6 +468,7 @@ describe('ComtradeDataService.fetchTradeData', () => {
             partnerCode: 0,
             flowCode: 'X',
             cmdCode: '10',
+            classificationCode: 'H6',
             cmdDesc: null,
             period: '2022',
             primaryValue: 1_000_000,

@@ -4,6 +4,14 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import {
+  codeSchema,
+  flowSchema,
+  goodsCodesMatchClassification,
+  m49Schema,
+  periodSchema,
+} from '@/mcp-server/tools/comtrade-input.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 
 export const getTopPartnersTool = tool('comtrade_get_top_partners', {
@@ -15,27 +23,57 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
     'Fetches a disaggregated breakdown across all partners then sorts locally. ' +
     'Omit cmd_code to rank partners for total trade.',
   annotations: { readOnlyHint: true, openWorldHint: true },
+  errors: [
+    {
+      reason: 'invalid_reporter_filter',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Reporter omission lacks an explicit partner.',
+      recovery: 'Supply one reporter_code for this partner ranking query.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'upstream_validation',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'UN Comtrade rejects the query dimensions.',
+      recovery: 'Check reporter, commodity, flow and period before retrying.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_upstream_response',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'UN Comtrade returns malformed trade data.',
+      recovery: 'Retry later when UN Comtrade returns valid trade data.',
+      retryable: false,
+      thrownBy: 'service',
+    },
+  ],
 
-  input: z.object({
-    reporter_code: z.number().int().describe('M49 numeric code of the reporting country.'),
-    flow_code: z.enum(['M', 'X']).describe('Trade flow: M=imports, X=exports.'),
-    period: z.string().min(4).describe('Single period: annual (YYYY) or monthly (YYYYMM).'),
-    cmd_code: z
-      .string()
-      .optional()
-      .describe(
-        'Single HS commodity code (e.g. "84", "8471"). ' +
-          'Omit or pass "TOTAL" to rank partners for total merchandise trade.',
+  input: z
+    .object({
+      reporter_code: m49Schema.describe('M49 numeric code of the reporting country (0–999).'),
+      flow_code: flowSchema.describe('Trade flow: M=imports, X=exports.'),
+      period: periodSchema.describe(
+        'Single period: annual YYYY or monthly YYYYMM, month 01–12; frequency is inferred.',
       ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .default(10)
-      .describe(
-        'Maximum number of top partners to return; above 50 returns all retrieved partners.',
-      ),
-  }),
+      cmd_code: codeSchema
+        .optional()
+        .describe(
+          'Single HS commodity code (e.g. "84", "8471"). ' +
+            'Omit or pass "TOTAL" to rank partners for total merchandise trade.',
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .default(10)
+        .describe(
+          'Maximum number of top partners to return; above 50 returns all retrieved partners.',
+        ),
+    })
+    .refine(goodsCodesMatchClassification, {
+      path: ['cmd_code'],
+      message: 'Use an HS code with 2, 4 or 6 digits, legacy 9999AA, AG2/4/6, or TOTAL.',
+    }),
 
   output: z.object({
     partners: z
@@ -73,6 +111,10 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
   }),
 
   enrichment: {
+    referenceNotice: z
+      .string()
+      .optional()
+      .describe('Reference descriptions unavailable; codes and values retained.'),
     notice: z.string().optional().describe('Recovery hint when no data is returned.'),
   },
 
@@ -92,10 +134,12 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
         flowCode: input.flow_code,
         period: input.period,
         cmdCode,
+        freqCode: input.period.length === 6 ? 'M' : 'A',
         // No partnerCode filter — get all partners for ranking
       },
       ctx.signal,
     );
+    if (result.referenceNotice) ctx.enrich({ referenceNotice: result.referenceNotice });
 
     if (result.records.length === 0) {
       ctx.enrich.notice(
