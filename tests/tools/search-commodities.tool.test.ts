@@ -3,16 +3,29 @@
  * @module tests/tools/search-commodities.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchCommoditiesTool } from '@/mcp-server/tools/definitions/search-commodities.tool.js';
 import {
-  type ComtradeReferenceService,
+  ComtradeReferenceService,
   initComtradeReferenceService,
 } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 const mockConfig = {} as Parameters<typeof initComtradeReferenceService>[0];
 const mockStorage = {} as Parameters<typeof initComtradeReferenceService>[1];
+
+type ToolCall = Awaited<ReturnType<typeof runToolContract>>;
+
+/** Every text block a tool call rendered into content[]. */
+function contentText(result: ToolCall): string {
+  return result.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n');
+}
+
+/** structuredContent parsed through the declared output schema (enrichment keys stripped). */
+function page(result: ToolCall) {
+  return searchCommoditiesTool.output.parse(result.structuredContent);
+}
 
 function seedReferenceService(): ComtradeReferenceService {
   const svc = initComtradeReferenceService(mockConfig, mockStorage);
@@ -64,9 +77,38 @@ function seedReferenceService(): ComtradeReferenceService {
   return svc;
 }
 
+/** Seed `count` HS headings described as widgets; returns their ids in catalog order. */
+function seedHeadings(count: number): string[] {
+  const svc = initComtradeReferenceService(mockConfig, mockStorage);
+  const ids = Array.from({ length: count }, (_, i) => String(1000 + i));
+  // @ts-expect-error — seeding private map
+  svc.hsByCode = new Map(
+    ids.map((id) => [
+      id,
+      {
+        id,
+        text: `${id} - Widget heading`,
+        aggrLevel: 4 as const,
+        parent: id.slice(0, 2),
+        isLeaf: false,
+        recommendedQueryCode: id,
+      },
+    ]),
+  );
+  return ids;
+}
+
 describe('searchCommoditiesTool', () => {
   beforeEach(() => {
     seedReferenceService();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockRejectedValue(new Error('Unexpected live fetch')),
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('finds commodities by keyword', async () => {
@@ -136,7 +178,189 @@ describe('searchCommoditiesTool', () => {
     }
   });
 
-  it('formats output with code, description, level, and recommendedQueryCode', () => {
+  it('lists the level-0 HS TOTAL as the total unfiltered and drops it from level filters', async () => {
+    const svc = seedReferenceService();
+    // @ts-expect-error — seeding private map
+    svc.hsByCode.set('TOTAL', {
+      id: 'TOTAL',
+      text: 'Total - All H6 commodities',
+      parent: '#',
+      aggrLevel: 0,
+      isLeaf: false,
+      recommendedQueryCode: 'TOTAL',
+    });
+    const unfiltered = await runToolContract(searchCommoditiesTool, { query: 'total' });
+    expect(unfiltered.structuredContent).toEqual({
+      classification: 'HS',
+      matches: [
+        {
+          id: 'TOTAL',
+          description: 'Total - All H6 commodities',
+          aggrLevel: 0,
+          parent: '#',
+          isLeaf: false,
+          recommendedQueryCode: 'TOTAL',
+        },
+      ],
+      totalMatches: 1,
+      shown: 1,
+      truncated: false,
+      offset: 0,
+    });
+    expect(JSON.stringify(unfiltered.content)).toContain('aggrLevel: 0 (Total) | Parent: #');
+    for (const aggr_level of [2, 4, 6]) {
+      const filtered = await runToolContract(searchCommoditiesTool, { query: 'total', aggr_level });
+      expect(filtered.structuredContent).toMatchObject({ matches: [], totalMatches: 0 });
+      expect(JSON.stringify(filtered.content)).not.toContain('TOTAL');
+    }
+  });
+
+  it('characterizes the default 50-match first page in catalog order', async () => {
+    const codes = seedHeadings(51);
+    const ctx = createMockContext();
+    const result = await searchCommoditiesTool.handler(
+      searchCommoditiesTool.input.parse({ query: 'widget' }),
+      ctx,
+    );
+    expect(result).toMatchObject({ totalMatches: 51, shown: 50, truncated: true });
+    expect(result.matches.map((m) => m.id)).toEqual(codes.slice(0, 50));
+    expect(getEnrichment(ctx).notice).toContain('Showing 50 of 51 matches.');
+  });
+
+  it('caps the default page at 50 and points the truncation notice at offset 50', async () => {
+    const ids = seedHeadings(51);
+    const first = await runToolContract(searchCommoditiesTool, { query: 'widget' });
+    expect(page(first)).toMatchObject({
+      totalMatches: 51,
+      shown: 50,
+      truncated: true,
+      offset: 0,
+      nextOffset: 50,
+    });
+    const notice =
+      'Showing 50 of 51 matches. Continue with offset=50 and the same query, classification and aggr_level, or narrow the query.';
+    expect(first.structuredContent).toMatchObject({ notice });
+    expect(contentText(first)).toContain(notice);
+    expect(contentText(first)).toContain('**Offset:** 0 | **Next offset:** 50');
+    const last = await runToolContract(searchCommoditiesTool, { query: 'widget', offset: 50 });
+    expect(page(last)).toStrictEqual({
+      classification: 'HS',
+      matches: [expect.objectContaining({ id: ids[50] })],
+      totalMatches: 51,
+      shown: 1,
+      truncated: true,
+      offset: 50,
+    });
+    expect(last.structuredContent).not.toHaveProperty('notice');
+    expect(contentText(last)).not.toContain('Next offset');
+  });
+
+  it.each([201, 500])(
+    'returns exactly limit %i matches past the old 200 threshold',
+    async (limit) => {
+      const ids = seedHeadings(520);
+      const result = await runToolContract(searchCommoditiesTool, { query: 'widget', limit });
+      const out = page(result);
+      expect(out).toMatchObject({ totalMatches: 520, shown: limit, offset: 0, nextOffset: limit });
+      expect(out.matches.map((m) => m.id)).toEqual(ids.slice(0, limit));
+      expect(contentText(result)).toContain(`**${ids[limit - 1]}** —`);
+      expect(contentText(result)).not.toContain(`**${ids[limit]}** —`);
+      expect(contentText(result)).toContain(`**Next offset:** ${limit}`);
+    },
+  );
+
+  it('pages by nextOffset to the full ordered match list without overlap or gap', async () => {
+    const ids = seedHeadings(7);
+    const all = page(await runToolContract(searchCommoditiesTool, { query: 'widget' }));
+    expect(all.matches.map((m) => m.id)).toEqual(ids);
+    const walked: string[] = [];
+    const pageSizes: number[] = [];
+    let offset = 0;
+    for (;;) {
+      const result = await runToolContract(searchCommoditiesTool, {
+        query: 'widget',
+        limit: 3,
+        offset,
+      });
+      const out = page(result);
+      expect(out).toMatchObject({ offset, totalMatches: 7 });
+      walked.push(...out.matches.map((m) => m.id));
+      pageSizes.push(out.shown);
+      if (out.nextOffset === undefined) break;
+      expect(out.nextOffset).toBe(offset + out.shown);
+      expect(contentText(result)).toContain(`offset=${out.nextOffset}`);
+      offset = out.nextOffset;
+    }
+    expect(walked).toEqual(ids);
+    expect(pageSizes).toEqual([3, 3, 1]);
+  });
+
+  it.each([7, 40])(
+    'returns an empty page with the true total at offset %i (at or past the end)',
+    async (offset) => {
+      seedHeadings(7);
+      const result = await runToolContract(searchCommoditiesTool, { query: 'widget', offset });
+      expect(page(result)).toStrictEqual({
+        classification: 'HS',
+        matches: [],
+        totalMatches: 7,
+        shown: 0,
+        truncated: true,
+        offset,
+      });
+      const notice = `Offset ${offset} is past the end of the 7 matching codes. Use an offset below 7.`;
+      expect(result.structuredContent).toMatchObject({ notice });
+      expect(contentText(result)).toContain(notice);
+      expect(contentText(result)).not.toContain('commodity codes matched');
+    },
+  );
+
+  it('keeps the no-match notice for a query without matches at any offset', async () => {
+    const result = await runToolContract(searchCommoditiesTool, { query: 'xyzzy', offset: 10 });
+    expect(page(result)).toStrictEqual({
+      classification: 'HS',
+      matches: [],
+      totalMatches: 0,
+      shown: 0,
+      truncated: false,
+      offset: 10,
+    });
+    const notice =
+      'No HS commodity codes matched "xyzzy". Try a different keyword, a shorter prefix, or remove the aggr_level filter.';
+    expect(result.structuredContent).toMatchObject({ notice });
+    expect(contentText(result)).toContain(notice);
+  });
+
+  it('trims and uppercases classification before searching and checking SITC levels', async () => {
+    const search = vi
+      .spyOn(ComtradeReferenceService.prototype, 'searchCommodityCodes')
+      .mockResolvedValue([]);
+    const hs = await runToolContract(searchCommoditiesTool, {
+      query: '01',
+      classification: ' h3 ',
+    });
+    expect(search).toHaveBeenLastCalledWith('01', 'H3', undefined, expect.anything());
+    expect(page(hs).classification).toBe('H3');
+    expect(contentText(hs)).toContain('Commodity Code Search — H3');
+    const sitc = await runToolContract(searchCommoditiesTool, {
+      query: '01',
+      classification: 's4',
+      aggr_level: 5,
+    });
+    expect(sitc.isError).not.toBe(true);
+    expect(search).toHaveBeenLastCalledWith('01', 'S4', 5, expect.anything());
+    const rejected = await runToolContract(searchCommoditiesTool, {
+      query: '01',
+      classification: 'H7',
+    });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.structuredContent).toMatchObject({
+      error: { code: JsonRpcErrorCode.InvalidParams },
+    });
+    expect(search).toHaveBeenCalledTimes(2);
+  });
+
+  it('formats output with code, description, level, recommendedQueryCode, and paging', () => {
     const output = {
       classification: 'HS',
       matches: [
@@ -148,16 +372,21 @@ describe('searchCommoditiesTool', () => {
           recommendedQueryCode: '84',
         },
       ],
-      totalMatches: 1,
+      totalMatches: 3,
       shown: 1,
-      truncated: false,
+      truncated: true,
+      offset: 1,
+      nextOffset: 2,
     };
     const blocks = searchCommoditiesTool.format!(output);
-    expect(blocks[0].type).toBe('text');
+    expect(blocks[0]?.type).toBe('text');
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('84');
     expect(text).toContain('Machinery');
     expect(text).toContain('aggrLevel');
     expect(text).toContain('Use in queries');
+    expect(text).toContain(
+      '**Matches:** 3 | **Shown:** 1 | **Truncated:** yes\n**Offset:** 1 | **Next offset:** 2',
+    );
   });
 });

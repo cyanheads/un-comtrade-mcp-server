@@ -9,12 +9,7 @@ import { getComtradeReferenceService } from '@/services/comtrade-reference/comtr
 export const lookupCountriesTool = tool('comtrade_lookup_countries', {
   title: 'Lookup Countries / Areas',
   description:
-    'Resolve country and area names to Comtrade M49 numeric codes used in all data queries. ' +
-    'Accepts a partial name, full name, or ISO alpha-2/alpha-3 code (e.g. "United States", "USA", "US"). ' +
-    'Returns matching entries with their numeric code, ISO identifiers, and a validAsReporter flag — ' +
-    'regional groupings like "World" (code 0) are valid partners but not valid reporters. ' +
-    'Use this before any trade data tool that requires reporter_code or partner_code. ' +
-    'To aggregate across all partners, use partner code 0 (World) — no lookup needed.',
+    'Resolve country and area names to Comtrade M49 numeric codes used in all data queries. Accepts a partial name, full name, or ISO alpha-2/alpha-3 code (e.g. "United States", "USA", "US"). Returns matching entries with their numeric code, ISO identifiers, a validAsReporter flag, and validity dates; historical entities such as Fed. Rep. of Germany (...1990) are listed after current ones. World (code 0) is a valid partner but not a valid reporter, while some groupings, such as the European Union (97), do report — check validAsReporter. Use this before any trade data tool that requires reporter_code or partner_code. To aggregate across all partners, use partner code 0 (World) — no lookup needed.',
   annotations: { readOnlyHint: true, openWorldHint: false },
 
   input: z.object({
@@ -54,18 +49,31 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
             validAsReporter: z
               .boolean()
               .describe(
-                'Whether this code is valid as a reporter_code in trade data queries. ' +
-                  'Regional groupings (isGroup=true) are typically not valid reporters.',
+                'Whether this code is valid as a reporter_code in trade data queries. Most groupings (isGroup=true) are partner-only, though some report, such as the European Union (97).',
               ),
             isGroup: z
               .boolean()
               .describe(
                 'Whether this entry is a geographic or economic grouping rather than a single country.',
               ),
+            entryEffectiveDate: z
+              .string()
+              .optional()
+              .describe(
+                'First day the entity is valid in UN Comtrade reference data (YYYY-MM-DD), when upstream lists one.',
+              ),
+            entryExpiredDate: z
+              .string()
+              .optional()
+              .describe(
+                'Last day the entity was valid (YYYY-MM-DD), e.g. 1990-12-31 for Fed. Rep. of Germany (...1990); absent when upstream records no expiry.',
+              ),
           })
           .describe('A country or area entry with its Comtrade M49 code and identifiers.'),
       )
-      .describe('Matching entries ordered by exact ISO identity, reporter validity, then name.'),
+      .describe(
+        'Matching entries, plus entries sharing an ISO-3 code with a match, ordered by exact ISO match, reporter validity, current before expired (entryExpiredDate before today), name, then code.',
+      ),
     totalMatches: z.number().describe('Total number of matching entries.'),
   }),
 
@@ -108,6 +116,8 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
         ...(c.iso2 && { iso2: c.iso2 }),
         validAsReporter: c.validAsReporter,
         isGroup: c.isGroup,
+        ...(c.entryEffectiveDate && { entryEffectiveDate: c.entryEffectiveDate }),
+        ...(c.entryExpiredDate && { entryExpiredDate: c.entryExpiredDate }),
       })),
       totalMatches: results.length,
     };
@@ -122,7 +132,16 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
       const tags = [c.validAsReporter ? 'reporter ✓' : 'reporter ✗', c.isGroup ? 'group' : null]
         .filter(Boolean)
         .join(', ');
-      lines.push(`\n**${c.name}** (code: ${c.id})${codes ? ` | ${codes}` : ''} | ${tags}`);
+      const validity = c.entryExpiredDate
+        ? c.entryEffectiveDate
+          ? `valid ${c.entryEffectiveDate} to ${c.entryExpiredDate}`
+          : `valid until ${c.entryExpiredDate}`
+        : c.entryEffectiveDate
+          ? `valid from ${c.entryEffectiveDate}`
+          : undefined;
+      lines.push(
+        `\n**${c.name}** (code: ${c.id})${codes ? ` | ${codes}` : ''} | ${tags}${validity ? ` | ${validity}` : ''}`,
+      );
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

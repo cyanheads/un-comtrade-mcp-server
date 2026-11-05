@@ -163,6 +163,89 @@ describe('lookupCountriesTool', () => {
     expect(names).toEqual(['Germany', 'United States of America', 'European Union']);
   });
 
+  it('ranks a current entity before an expired one and carries validity dates on both surfaces', async () => {
+    const svc = seedReferenceService();
+    // @ts-expect-error — accessing private map for test seeding
+    svc.countriesByCode = new Map([
+      [
+        280,
+        {
+          id: 280,
+          name: 'Fed. Rep. of Germany (...1990)',
+          iso3: 'DEU',
+          iso2: 'DE',
+          validAsReporter: true,
+          isGroup: false,
+          entryEffectiveDate: '1900-01-01',
+          entryExpiredDate: '1990-12-31',
+        },
+      ],
+      [
+        276,
+        {
+          id: 276,
+          name: 'Germany',
+          iso3: 'DEU',
+          iso2: 'DE',
+          validAsReporter: true,
+          isGroup: false,
+          entryEffectiveDate: '1991-01-01',
+        },
+      ],
+    ]);
+    const result = await runToolContract(lookupCountriesTool, { query: 'Germany' });
+    expect(result.structuredContent).toEqual({
+      matches: [
+        {
+          id: 276,
+          name: 'Germany',
+          iso3: 'DEU',
+          iso2: 'DE',
+          validAsReporter: true,
+          isGroup: false,
+          entryEffectiveDate: '1991-01-01',
+        },
+        {
+          id: 280,
+          name: 'Fed. Rep. of Germany (...1990)',
+          iso3: 'DEU',
+          iso2: 'DE',
+          validAsReporter: true,
+          isGroup: false,
+          entryEffectiveDate: '1900-01-01',
+          entryExpiredDate: '1990-12-31',
+        },
+      ],
+      totalMatches: 2,
+    });
+    const text = JSON.stringify(result.content);
+    expect(text).toContain(
+      '(code: 276) | ISO3: DEU | ISO2: DE | reporter ✓ | valid from 1991-01-01',
+    );
+    expect(text).toContain('valid 1900-01-01 to 1990-12-31');
+    expect(text.indexOf('(code: 276)')).toBeLessThan(text.indexOf('(code: 280)'));
+  });
+
+  it('formats a sparse validity range without inventing the missing bound', () => {
+    const blocks = lookupCountriesTool.format!({
+      matches: [
+        { id: 2, name: 'No dates', validAsReporter: false, isGroup: false },
+        {
+          id: 1,
+          name: 'Only expired',
+          validAsReporter: false,
+          isGroup: false,
+          entryExpiredDate: '1990-12-31',
+        },
+      ],
+      totalMatches: 2,
+    });
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('**No dates** (code: 2) | reporter ✗\n');
+    expect(text).toContain('**Only expired** (code: 1) | reporter ✗ | valid until 1990-12-31');
+    expect(text).not.toContain('valid from');
+  });
+
   it('formats output with codes, ISO identifiers, and reporter flag', () => {
     const output = {
       matches: [

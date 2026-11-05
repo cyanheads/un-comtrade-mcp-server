@@ -5,13 +5,13 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { goodsClassificationSchema } from '@/mcp-server/tools/comtrade-input.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
-import { COMMODITY_CLASSIFICATIONS } from '@/services/comtrade-reference/types.js';
 
 export const searchCommoditiesTool = tool('comtrade_search_commodities', {
   title: 'Search Commodity Codes',
   description:
-    'Find HS or SITC commodity codes by keyword, partial description, or code prefix in the selected classification. Returns descriptions, native aggregation levels, parents, leaf status, and recommendedQueryCode for subsequent trade queries. HS uses levels 2 (chapter), 4 (heading), and 6 (subheading); SITC uses levels 1–5. Select the edition matching the trade records when interpreting historical codes.',
+    'Find HS or SITC commodity codes by keyword, partial description, or code prefix in the selected classification. Returns descriptions, native aggregation levels, parents, leaf status, and recommendedQueryCode for subsequent trade queries. HS uses levels 2 (chapter), 4 (heading), and 6 (subheading); SITC uses levels 1–5. Select the edition matching the trade records when interpreting historical codes. Each page holds up to limit matches; continue with nextOffset using the same query, classification, and aggr_level.',
   annotations: { readOnlyHint: true, openWorldHint: false },
 
   input: z.object({
@@ -21,11 +21,10 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       .describe(
         'Keyword, partial description, or commodity code prefix. Examples: "motor vehicles", "8471", "coffee", "84" (HS chapter 84 = machinery).',
       ),
-    classification: z
-      .enum(COMMODITY_CLASSIFICATIONS)
+    classification: goodsClassificationSchema
       .default('HS')
       .describe(
-        'Goods reference catalog: HS uses the default HS.json discovery catalog, whose total identifies H6; it is not an authoritative historical-edition reference. Select H0–H6 for an explicit HS edition, or SS/S1–S4 for SITC.',
+        'Goods reference catalog, case-insensitive: HS uses the default HS.json discovery catalog, whose total identifies H6; it is not an authoritative historical-edition reference. Select H0–H6 for an explicit HS edition, or SS/S1–S4 for SITC.',
       ),
     aggr_level: z
       .union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)])
@@ -38,7 +37,13 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       .int()
       .min(1)
       .default(50)
-      .describe('Maximum number of results to return; above 200 returns all matching codes.'),
+      .describe('Maximum matching codes returned per page; defaults to 50.'),
+    offset: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe('Number of matching codes to skip; use nextOffset to continue.'),
   }),
 
   output: z.object({
@@ -53,7 +58,9 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
             description: z.string().describe('Full commodity description.'),
             aggrLevel: z
               .number()
-              .describe('Native aggregation level in the selected HS or SITC catalog.'),
+              .describe(
+                'Native aggregation level in the selected HS or SITC catalog; 0 is the all-commodities TOTAL, which no aggr_level filter returns.',
+              ),
             parent: z
               .string()
               .optional()
@@ -69,12 +76,19 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
           })
           .describe('A commodity entry from the selected catalog.'),
       )
-      .describe('Commodity codes matching the query in the selected classification.'),
-    totalMatches: z.number().describe('Total matching codes (before limit truncation).'),
-    shown: z.number().describe('Number of codes returned in this response.'),
+      .describe(
+        'Commodity codes on this page matching the query in the selected classification, in catalog order.',
+      ),
+    totalMatches: z.number().describe('Total matching codes across all pages.'),
+    shown: z.number().describe('Number of codes returned on this page.'),
     truncated: z
       .boolean()
-      .describe('True when matches were capped at the limit (totalMatches exceeds shown).'),
+      .describe('Whether this page holds only part of the matching codes (shown < totalMatches).'),
+    offset: z.number().describe('Number of matching codes skipped for this page.'),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe('Offset for the next page; absent when no matching codes remain.'),
   }),
 
   enrichment: {
@@ -82,8 +96,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       .string()
       .optional()
       .describe(
-        'Recovery hint when no matches are found or results are truncated. ' +
-          'Absent when results are non-empty and not truncated.',
+        'Recovery hint when no codes match, matches remain past this page, or the offset is past the end. Absent otherwise.',
       ),
   },
 
@@ -99,7 +112,10 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
   async handler(input, ctx) {
     ctx.log.info('comtrade_search_commodities', {
       query: input.query,
+      classification: input.classification,
       aggr_level: input.aggr_level,
+      limit: input.limit,
+      offset: input.offset,
     });
     const ref = getComtradeReferenceService();
 
@@ -120,33 +136,27 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       ctx.signal,
     );
 
-    if (results.length === 0) {
-      ctx.enrich.notice(
-        `No ${input.classification} commodity codes matched "${input.query}"` +
-          (input.aggr_level ? ` at aggr_level ${input.aggr_level}` : '') +
-          `. Try a different keyword, a shorter prefix, or remove the aggr_level filter.`,
-      );
-      return {
-        classification: input.classification,
-        matches: [],
-        totalMatches: 0,
-        shown: 0,
-        truncated: false,
-      };
-    }
-
     const total = results.length;
-    const sliced = input.limit > 200 ? results : results.slice(0, input.limit);
+    const page = results.slice(input.offset, input.offset + input.limit);
+    const nextOffset = input.offset + page.length;
 
-    if (total > sliced.length) {
+    if (total === 0) {
       ctx.enrich.notice(
-        `Showing ${sliced.length} of ${total} matches. Increase the limit parameter or narrow your query to see more results.`,
+        `No ${input.classification} commodity codes matched "${input.query}"${input.aggr_level ? ` at aggr_level ${input.aggr_level}` : ''}. Try a different keyword, a shorter prefix, or remove the aggr_level filter.`,
+      );
+    } else if (page.length === 0) {
+      ctx.enrich.notice(
+        `Offset ${input.offset} is past the end of the ${total} matching codes. Use an offset below ${total}.`,
+      );
+    } else if (nextOffset < total) {
+      ctx.enrich.notice(
+        `Showing ${page.length} of ${total} matches. Continue with offset=${nextOffset} and the same query, classification and aggr_level, or narrow the query.`,
       );
     }
 
     return {
       classification: input.classification,
-      matches: sliced.map((h) => ({
+      matches: page.map((h) => ({
         id: h.id,
         description: h.text,
         aggrLevel: h.aggrLevel,
@@ -155,8 +165,10 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
         recommendedQueryCode: h.id,
       })),
       totalMatches: total,
-      shown: sliced.length,
-      truncated: total > sliced.length,
+      shown: page.length,
+      truncated: page.length < total,
+      offset: input.offset,
+      ...(nextOffset < total && { nextOffset }),
     };
   },
 
@@ -164,6 +176,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
     const lines = [
       `## Commodity Code Search — ${result.classification}`,
       `**Matches:** ${result.totalMatches} | **Shown:** ${result.shown} | **Truncated:** ${result.truncated ? 'yes' : 'no'}`,
+      `**Offset:** ${result.offset}${result.nextOffset === undefined ? '' : ` | **Next offset:** ${result.nextOffset}`}`,
     ];
     for (const m of result.matches) {
       const levelLabel = result.classification.startsWith('S')
