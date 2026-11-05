@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-11-05
+
+Startup survives malformed reference rows, keyless calls pace to UN Comtrade's limit and disclose unserved periods, services trade gains converted EB10/EB02 series, and partner-only reporter codes get actionable notices.
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-11-03 · ⚠️ Breaking
 
 Classification-aware trade workflows with complete commodity rankings and an agent guide.
