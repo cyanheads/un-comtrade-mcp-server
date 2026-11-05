@@ -7,6 +7,10 @@ import { z } from '@cyanheads/mcp-ts-core';
 
 /** A normalized country/area entry combining reporter and partner dimensions. */
 export interface CountryEntry {
+  /** First day the entity is valid, `YYYY-MM-DD`; `1900-01-01` is upstream's open start. */
+  entryEffectiveDate?: string;
+  /** Last day the entity was valid, `YYYY-MM-DD`; absent while the entity is current. */
+  entryExpiredDate?: string;
   /** M49 numeric code. */
   id: number;
   /** Whether this area is a geographic/economic grouping. */
@@ -21,10 +25,24 @@ export interface CountryEntry {
   validAsReporter: boolean;
 }
 
+/**
+ * How the startup reference index classifies a code used as a reporter. It annotates empty
+ * results only: a dropped Reporters.json row can make a real reporter read as partner-only.
+ */
+export type ReporterStatus =
+  | { referenceStatus: 'reporter'; name: string }
+  | {
+      referenceStatus: 'partner_only';
+      name: string;
+      /** Reporter-valid entry with the same ISO-3 identity, current before expired. */
+      suggestedReporterCode?: number;
+    }
+  | { referenceStatus: 'unknown' };
+
 /** An HS commodity code entry (goods). */
 export interface HsCode {
-  /** Number of HS digits (2, 4, or 6). */
-  aggrLevel: 2 | 4 | 6;
+  /** 0 for the all-commodities TOTAL, otherwise the number of HS digits (2, 4, or 6). */
+  aggrLevel: 0 | 2 | 4 | 6;
   /** HS code string, e.g. "84", "8471", "847130". */
   id: string;
   /** Whether this code has no children (leaf node). */
@@ -47,23 +65,28 @@ export interface EbopsCategory {
   text: string;
 }
 
-/** Fields used from the UN Comtrade reporter reference file. */
-export const rawReporterSchema = z.object({
-  reporterCode: z.number(),
-  reporterDesc: z.string(),
+/** Upstream writes entity dates as `YYYY-MM-DDT00:00:00`; only the date part carries meaning. */
+const referenceDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}/);
+
+/**
+ * One row of either country file. Identity is read from `id`/`text`, which every row of both
+ * files carries; ISO codes may use the reporter or the partner spelling, because Reporters.json
+ * can hold partner-shaped rows.
+ */
+export const rawCountrySchema = z.object({
+  id: z.number().int(),
+  text: z.string(),
   reporterCodeIsoAlpha2: z.string().optional(),
   reporterCodeIsoAlpha3: z.string().optional(),
-  isGroup: z.union([z.boolean(), z.string(), z.number()]).optional(),
-});
-
-/** Fields used from the UN Comtrade partner reference file. */
-export const rawPartnerSchema = z.object({
-  PartnerCode: z.number(),
-  PartnerDesc: z.string(),
   PartnerCodeIsoAlpha2: z.string().optional(),
   PartnerCodeIsoAlpha3: z.string().optional(),
   isGroup: z.union([z.boolean(), z.string(), z.number()]).optional(),
+  entryEffectiveDate: referenceDateSchema.optional(),
+  entryExpiredDate: referenceDateSchema.optional(),
 });
+
+/** A parsed row of Reporters.json or partnerAreas.json. */
+export type RawCountry = z.infer<typeof rawCountrySchema>;
 
 /** Native commodity catalog fields; old editions spell aggregation as aggrlevel. */
 export const rawHsSchema = z.object({
@@ -78,12 +101,34 @@ export const rawHsSchema = z.object({
 /** A parsed upstream commodity entry. */
 export type RawHsEntry = z.infer<typeof rawHsSchema>;
 
-/** Fields used from the combined EB reference file. */
+/** Fields used from the combined EB reference file and the per-scheme EB catalogs. */
 export const rawEbopsSchema = z.object({
   id: z.string(),
   text: z.string(),
   parent: z.string().optional(),
 });
+
+/** Per-scheme EBOPS catalogs published beside the combined EB.json, in tag order. */
+export const EB_SCHEMES = ['EB10', 'EB10S', 'EB02'] as const;
+
+/** An EBOPS scheme: EB10 (EBOPS 2010), EB10S (EBOPS 2010 SDMX codes), EB02 (EBOPS 2002). */
+export type EbScheme = (typeof EB_SCHEMES)[number];
+
+/** A combined-EB category tagged with the scheme catalogs that list its code. */
+export interface ServiceCategory extends EbopsCategory {
+  /**
+   * EB.json's own parent when it names no EB.json code and a scheme catalog supplies `parent`
+   * instead: EB10's top-level codes, which EB.json parents under the absent id `TOTAL`.
+   */
+  ebParent?: string;
+  /** Scheme catalogs listing this code, in `EB_SCHEMES` order; empty when none lists it. */
+  schemes: EbScheme[];
+}
+
+/** EB categories tagged by scheme, or untagged with the scheme catalogs that failed to load. */
+export type ServiceCategoryListing =
+  | { status: 'tagged'; categories: ServiceCategory[] }
+  | { status: 'untagged'; categories: EbopsCategory[]; unavailableCatalogs: string[] };
 
 /** Goods catalog names supported by UN Comtrade's reference endpoint. */
 export const COMMODITY_CLASSIFICATIONS = [

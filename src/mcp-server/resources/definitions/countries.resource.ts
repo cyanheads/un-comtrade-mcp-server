@@ -10,10 +10,7 @@ export const countriesResource = resource('comtrade://countries', {
   name: 'comtrade-countries',
   title: 'Comtrade Country/Area Codes',
   description:
-    'Complete list of all Comtrade country and area codes — both reporters and partners — ' +
-    'with M49 numeric codes, ISO identifiers, validAsReporter flag, and group membership. ' +
-    'Bundled from reference data loaded at startup. Use comtrade_lookup_countries for name-based ' +
-    'search; use this resource to enumerate the full list.',
+    'Complete list of all Comtrade country and area codes — both reporters and partners — with M49 numeric codes, ISO identifiers, validAsReporter flag, group membership, and entity validity dates. Bundled from reference data loaded at startup. Use comtrade_lookup_countries for name-based search; use this resource to enumerate the full list.',
   mimeType: 'application/json',
   params: z.object({}),
   output: z.object({
@@ -29,6 +26,16 @@ export const countriesResource = resource('comtrade://countries', {
               .boolean()
               .describe('Whether valid as a reporter code in data queries.'),
             isGroup: z.boolean().describe('Whether this is a geographic or economic grouping.'),
+            entryEffectiveDate: z
+              .string()
+              .optional()
+              .describe('First day the entity is valid (YYYY-MM-DD), when upstream lists one.'),
+            entryExpiredDate: z
+              .string()
+              .optional()
+              .describe(
+                'Last day the entity was valid (YYYY-MM-DD); absent when upstream records no expiry.',
+              ),
           })
           .describe('A country or area entry with M49 code and identifiers.'),
       )
@@ -48,6 +55,8 @@ export const countriesResource = resource('comtrade://countries', {
         ...(c.iso2 && { iso2: c.iso2 }),
         validAsReporter: c.validAsReporter,
         isGroup: c.isGroup,
+        ...(c.entryEffectiveDate && { entryEffectiveDate: c.entryEffectiveDate }),
+        ...(c.entryExpiredDate && { entryExpiredDate: c.entryExpiredDate }),
       })),
       totalCount: all.length,
     };

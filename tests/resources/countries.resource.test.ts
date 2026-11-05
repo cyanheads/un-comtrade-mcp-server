@@ -110,6 +110,64 @@ describe('countriesResource', () => {
     expect(world?.isGroup).toBe(true);
   });
 
+  it('carries validity dates as upstream lists them, without inventing an expiry', () => {
+    const svc = seedReferenceService();
+    // @ts-expect-error — seeding private map
+    svc.countriesByCode = new Map([
+      [
+        280,
+        {
+          id: 280,
+          name: 'Fed. Rep. of Germany (...1990)',
+          iso3: 'DEU',
+          iso2: 'DE',
+          validAsReporter: true,
+          isGroup: false,
+          entryEffectiveDate: '1900-01-01',
+          entryExpiredDate: '1990-12-31',
+        },
+      ],
+      [
+        276,
+        {
+          id: 276,
+          name: 'Germany',
+          iso3: 'DEU',
+          iso2: 'DE',
+          validAsReporter: true,
+          isGroup: false,
+          entryEffectiveDate: '1991-01-01',
+        },
+      ],
+      [0, { id: 0, name: 'World', validAsReporter: false, isGroup: true }],
+    ]);
+    const result = countriesResource.output!.parse(
+      countriesResource.handler(countriesResource.params.parse({}), createMockContext()),
+    );
+    expect(result.countries).toEqual([
+      {
+        id: 280,
+        name: 'Fed. Rep. of Germany (...1990)',
+        iso3: 'DEU',
+        iso2: 'DE',
+        validAsReporter: true,
+        isGroup: false,
+        entryEffectiveDate: '1900-01-01',
+        entryExpiredDate: '1990-12-31',
+      },
+      {
+        id: 276,
+        name: 'Germany',
+        iso3: 'DEU',
+        iso2: 'DE',
+        validAsReporter: true,
+        isGroup: false,
+        entryEffectiveDate: '1991-01-01',
+      },
+      { id: 0, name: 'World', validAsReporter: false, isGroup: true },
+    ]);
+  });
+
   it('list() returns the static resource descriptor', () => {
     const listing = countriesResource.list!();
     expect(listing.resources).toHaveLength(1);

@@ -1,7 +1,8 @@
 /**
  * @fileoverview Comtrade reference data service. Fetches and indexes reporter/partner
  * country lists, HS commodity codes, and EBOPS service categories from UN Comtrade
- * static reference files at startup. All data is held in memory for fast lookups.
+ * static reference files at startup, and loads edition, unit, and EB scheme catalogs on
+ * demand. Catalogs are validated row by row. All data is held in memory for fast lookups.
  * @module services/comtrade-reference/comtrade-reference-service
  */
 
@@ -9,21 +10,30 @@ import { z } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import { serializationError } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
-import { fetchWithTimeout, requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import {
+  fetchWithTimeout,
+  logger,
+  requestContextService,
+  withRetry,
+} from '@cyanheads/mcp-ts-core/utils';
 import type {
   CommodityCode,
   CountryEntry,
   EbopsCategory,
+  EbScheme,
   HsCode,
   QuantityUnit,
+  RawCountry,
   RawHsEntry,
+  ReporterStatus,
+  ServiceCategoryListing,
 } from './types.js';
 import {
   COMMODITY_CLASSIFICATIONS,
+  EB_SCHEMES,
+  rawCountrySchema,
   rawEbopsSchema,
   rawHsSchema,
-  rawPartnerSchema,
-  rawReporterSchema,
 } from './types.js';
 
 const REFERENCE_BASE = 'https://comtradeapi.un.org/files/v1/app/reference';
@@ -34,11 +44,33 @@ const quantityUnitSchema = z.object({
   qtyAbbr: z.string(),
   qtyDescription: z.string(),
 });
+/** HS aggregation levels: 0 is the all-commodities TOTAL; the others count digits. */
+const HS_LEVELS = [0, 2, 4, 6] as const;
+
+type RawEbopsEntry = z.infer<typeof rawEbopsSchema>;
+
+/** The HS level a code's shape implies, for rows whose upstream level is not an HS level. */
+function hsLevelFromCode(id: string): HsCode['aggrLevel'] {
+  if (id === 'TOTAL') return 0;
+  return id.length <= 2 ? 2 : id.length <= 4 ? 4 : 6;
+}
+
+/** Today's UTC date as `YYYY-MM-DD`, comparable with entity validity dates. */
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** An entity is expired once its last valid day is before today; without an expiry it is current. */
+function isExpired(entry: CountryEntry, today: string): boolean {
+  return entry.entryExpiredDate !== undefined && entry.entryExpiredDate < today;
+}
 
 /** Indexes all UN Comtrade reference data in memory for fast lookups. */
 export class ComtradeReferenceService {
   /** Combined country/area map keyed by M49 numeric code. */
   private countriesByCode = new Map<number, CountryEntry>();
+  /** Codes listed in partnerAreas.json; Reporters.json also carries reporter-only codes (EU 97, ASEAN 975). */
+  private partnerCodes = new Set<number>();
   /** Default HS.json discovery catalog; not an authoritative historical-edition lookup. */
   private hsByCode = new Map<string, HsCode>();
   /** EBOPS categories keyed by category code. */
@@ -46,60 +78,45 @@ export class ComtradeReferenceService {
   private sitcByClassification = new Map<string, Map<string, RawHsEntry>>();
   private commoditiesByClassification = new Map<string, Map<string, CommodityCode>>();
   private quantityUnits: Map<number, QuantityUnit> | undefined;
+  /** Per-scheme EBOPS catalogs keyed by category code, loaded on demand. */
+  private ebSchemeCatalogs = new Map<EbScheme, Map<string, RawEbopsEntry>>();
 
   // biome-ignore lint/complexity/noUselessConstructor: params reserved for future use
   constructor(_config: AppConfig, _storage: StorageService) {}
 
-  /** Fetch and index all reference data. Called once from setup(). */
+  /** Fetch and index all reference data. Called once from setup(); an empty catalog stops startup. */
   async initialize(): Promise<void> {
     const [reporters, partners, hsEntries, ebopsEntries] = await Promise.all([
-      this.fetchJson('Reporters.json', rawReporterSchema),
-      this.fetchJson('partnerAreas.json', rawPartnerSchema),
+      this.fetchJson('Reporters.json', rawCountrySchema),
+      this.fetchJson('partnerAreas.json', rawCountrySchema),
       this.fetchJson('HS.json', rawHsSchema),
       this.fetchJson('EB.json', rawEbopsSchema),
     ]);
-
-    // Index reporters — these are valid as reporter codes
-    const reporterCodes = new Set<number>();
-    for (const r of reporters) {
-      reporterCodes.add(r.reporterCode);
-      if (!this.countriesByCode.has(r.reporterCode)) {
-        this.countriesByCode.set(r.reporterCode, {
-          id: r.reporterCode,
-          name: r.reporterDesc,
-          ...(r.reporterCodeIsoAlpha2 && { iso2: r.reporterCodeIsoAlpha2 }),
-          ...(r.reporterCodeIsoAlpha3 && { iso3: r.reporterCodeIsoAlpha3 }),
-          validAsReporter: true,
-          isGroup: r.isGroup === true || r.isGroup === 1 || r.isGroup === '1',
+    for (const [filename, rows] of [
+      ['Reporters.json', reporters],
+      ['partnerAreas.json', partners],
+      ['HS.json', hsEntries],
+      ['EB.json', ebopsEntries],
+    ] as const) {
+      // An empty index would answer every lookup with nothing; failing startup is the honest outcome.
+      if (rows.length === 0) {
+        throw serializationError('Comtrade returned an empty reference catalog. Retry later.', {
+          filename,
         });
       }
     }
 
-    // Index partners — may include groupings not valid as reporters
-    for (const p of partners) {
-      if (!this.countriesByCode.has(p.PartnerCode)) {
-        this.countriesByCode.set(p.PartnerCode, {
-          id: p.PartnerCode,
-          name: p.PartnerDesc,
-          ...(p.PartnerCodeIsoAlpha2 && { iso2: p.PartnerCodeIsoAlpha2 }),
-          ...(p.PartnerCodeIsoAlpha3 && { iso3: p.PartnerCodeIsoAlpha3 }),
-          validAsReporter: reporterCodes.has(p.PartnerCode),
-          isGroup: p.isGroup === true || p.isGroup === 1 || p.isGroup === '1',
-        });
-      }
+    // Reporters.json rows are valid reporter codes; partnerAreas.json adds partner-only areas.
+    for (const row of reporters) this.indexCountry(row, true);
+    for (const row of partners) {
+      this.partnerCodes.add(row.id);
+      this.indexCountry(row, false);
     }
 
-    // Index HS codes — compute aggr level from code length if not provided
+    // Keep upstream's level when it is an HS level; otherwise derive it from the code.
     for (const h of hsEntries) {
-      const raw =
-        typeof h.aggrLevel === 'number'
-          ? h.aggrLevel
-          : h.id.length <= 2
-            ? 2
-            : h.id.length <= 4
-              ? 4
-              : 6;
-      const aggrLevel = ([2, 4, 6].includes(raw) ? raw : 6) as 2 | 4 | 6;
+      const upstreamLevel = h.aggrLevel ?? h.aggrlevel;
+      const aggrLevel = HS_LEVELS.find((level) => level === upstreamLevel) ?? hsLevelFromCode(h.id);
       this.hsByCode.set(h.id, {
         id: h.id,
         text: h.text,
@@ -120,9 +137,50 @@ export class ComtradeReferenceService {
     }
   }
 
+  /** Index a country row unless its code is already indexed; Reporters.json is indexed first. */
+  private indexCountry(row: RawCountry, validAsReporter: boolean): void {
+    if (this.countriesByCode.has(row.id)) return;
+    const iso2 = row.reporterCodeIsoAlpha2 || row.PartnerCodeIsoAlpha2;
+    const iso3 = row.reporterCodeIsoAlpha3 || row.PartnerCodeIsoAlpha3;
+    this.countriesByCode.set(row.id, {
+      id: row.id,
+      name: row.text,
+      ...(iso2 && { iso2 }),
+      ...(iso3 && { iso3 }),
+      validAsReporter,
+      isGroup: row.isGroup === true || row.isGroup === 1 || row.isGroup === '1',
+      ...(row.entryEffectiveDate && { entryEffectiveDate: row.entryEffectiveDate.slice(0, 10) }),
+      ...(row.entryExpiredDate && { entryExpiredDate: row.entryExpiredDate.slice(0, 10) }),
+    });
+  }
+
   /** Look up a country/area by M49 numeric code. */
   getCountryByCode(code: number): CountryEntry | undefined {
     return this.countriesByCode.get(code);
+  }
+
+  /**
+   * Classify a code used as a reporter: reporter-valid, partner-only (naming the reporter-valid
+   * entry with the same ISO-3 identity, current before expired, then lowest code), or in neither
+   * catalog. ISO-2 does not qualify: it was reassigned between entities (BQ, CS). Annotates empty
+   * results only; never reject a request on it.
+   */
+  getReporterStatus(code: number): ReporterStatus {
+    const entry = this.countriesByCode.get(code);
+    if (!entry) return { referenceStatus: 'unknown' };
+    if (entry.validAsReporter) return { referenceStatus: 'reporter', name: entry.name };
+    const today = todayIso();
+    const [suggested] = Array.from(this.countriesByCode.values())
+      .filter(
+        (candidate) =>
+          candidate.validAsReporter && entry.iso3 !== undefined && candidate.iso3 === entry.iso3,
+      )
+      .sort((a, b) => Number(isExpired(a, today)) - Number(isExpired(b, today)) || a.id - b.id);
+    return {
+      referenceStatus: 'partner_only',
+      name: entry.name,
+      ...(suggested && { suggestedReporterCode: suggested.id }),
+    };
   }
 
   /** Look up an HS code entry. */
@@ -220,6 +278,87 @@ export class ComtradeReferenceService {
     return this.ebopsByCode.get(code);
   }
 
+  /**
+   * Load one EBOPS scheme catalog on demand within ten seconds; cache completed successes only.
+   * An empty catalog is a failed load: cached, it would tag no category with its scheme for good.
+   */
+  private async getEbSchemeCatalog(
+    scheme: EbScheme,
+    signal?: AbortSignal,
+  ): Promise<Map<string, RawEbopsEntry>> {
+    signal?.throwIfAborted();
+    const cached = this.ebSchemeCatalogs.get(scheme);
+    if (cached) return cached;
+    const entries = await this.fetchJson(`${scheme}.json`, rawEbopsSchema, signal, 10_000);
+    signal?.throwIfAborted();
+    if (entries.length === 0) {
+      throw serializationError('Comtrade returned an empty reference catalog. Retry later.', {
+        filename: `${scheme}.json`,
+      });
+    }
+    const index = new Map(entries.map((entry) => [entry.id, entry]));
+    this.ebSchemeCatalogs.set(scheme, index);
+    return index;
+  }
+
+  /**
+   * EB categories matching an optional keyword or code prefix, each tagged with the scheme
+   * catalogs (EB10, EB10S, EB02) that list its code. A code whose EB.json parent is no EB.json
+   * code takes the parent a scheme catalog gives it, keeping EB.json's as `ebParent` (EB10's top
+   * level: `TOTAL` → `200`). If any scheme catalog fails to load, the categories come back
+   * untagged with EB.json's parents. Caller cancellation propagates.
+   */
+  async getServiceCategories(
+    query?: string,
+    signal?: AbortSignal,
+  ): Promise<ServiceCategoryListing> {
+    signal?.throwIfAborted();
+    const categories = query ? this.searchEbopsCategories(query) : this.getAllEbopsCategories();
+    const loads = await Promise.all(
+      EB_SCHEMES.map((scheme) =>
+        this.getEbSchemeCatalog(scheme, signal).then(
+          (catalog) => ({ scheme, catalog }),
+          (reason: unknown) => ({ scheme, reason }),
+        ),
+      ),
+    );
+    signal?.throwIfAborted();
+    const failed = loads.filter((load) => 'reason' in load);
+    if (failed.length > 0) {
+      const unavailableCatalogs = failed.map(({ scheme }) => `${scheme}.json`);
+      logger.warning(
+        `EB scheme catalogs unavailable (${unavailableCatalogs.join(', ')}); serving untagged service categories.`,
+        requestContextService.createRequestContext({
+          operation: 'ComtradeReferenceService.getServiceCategories',
+          additionalContext: {
+            unavailableCatalogs,
+            reasons: failed.map(({ reason }) =>
+              reason instanceof Error ? reason.message : String(reason),
+            ),
+          },
+        }),
+      );
+      return { status: 'untagged', categories, unavailableCatalogs };
+    }
+    const catalogs = loads.flatMap((load) => ('catalog' in load ? [load] : []));
+    return {
+      status: 'tagged',
+      categories: categories.map((category) => {
+        const schemes = catalogs
+          .filter(({ catalog }) => catalog.has(category.id))
+          .map(({ scheme }) => scheme);
+        const ebParent = category.parent;
+        if (ebParent === undefined || this.ebopsByCode.has(ebParent)) {
+          return { ...category, schemes };
+        }
+        const parent = catalogs
+          .map(({ catalog }) => catalog.get(category.id)?.parent)
+          .find((candidate) => candidate !== undefined && this.ebopsByCode.has(candidate));
+        return parent ? { ...category, parent, ebParent, schemes } : { ...category, schemes };
+      }),
+    };
+  }
+
   /** All country entries (reporters + partners combined). */
   getAllCountries(): CountryEntry[] {
     return Array.from(this.countriesByCode.values());
@@ -237,43 +376,37 @@ export class ComtradeReferenceService {
   }
 
   /**
-   * Search country/area entries by name fragment or ISO code.
-   * Returns entries where name, iso3, or iso2 match the query (case-insensitive).
+   * Search country/area entries by name fragment or ISO code (case-insensitive). Each match also
+   * pulls in the entries sharing its ISO-3 identity; ISO-2 codes were reassigned between entities,
+   * so they never expand a match. Ordered exact ISO match, reporter-valid, current before
+   * expired, name, then code.
    */
   searchCountries(query: string, roleFilter?: 'reporter' | 'partner' | 'any'): CountryEntry[] {
     const q = query.toLowerCase().trim();
-    const identities = new Set<string>();
-    for (const entry of this.countriesByCode.values()) {
-      if (
-        entry.name.toLowerCase().includes(q) ||
-        entry.iso3?.toLowerCase() === q ||
-        entry.iso2?.toLowerCase() === q
-      ) {
-        if (entry.iso2) identities.add(entry.iso2);
-        if (entry.iso3) identities.add(entry.iso3);
-      }
-    }
-    const results: CountryEntry[] = [];
-    for (const entry of this.countriesByCode.values()) {
-      const nameMatch = entry.name.toLowerCase().includes(q);
-      const iso3Match = entry.iso3?.toLowerCase() === q;
-      const iso2Match = entry.iso2?.toLowerCase() === q;
-      const identityMatch =
-        (entry.iso2 !== undefined && identities.has(entry.iso2)) ||
-        (entry.iso3 !== undefined && identities.has(entry.iso3));
-      if (!nameMatch && !iso3Match && !iso2Match && !identityMatch) continue;
-      if (roleFilter === 'reporter' && !entry.validAsReporter) continue;
-      results.push(entry);
-    }
     const exactIso = (entry: CountryEntry) =>
       entry.iso2?.toLowerCase() === q || entry.iso3?.toLowerCase() === q;
-    return results.sort(
-      (a, b) =>
-        Number(exactIso(b)) - Number(exactIso(a)) ||
-        Number(b.validAsReporter) - Number(a.validAsReporter) ||
-        a.name.localeCompare(b.name) ||
-        a.id - b.id,
-    );
+    const matches = (entry: CountryEntry) =>
+      entry.name.toLowerCase().includes(q) || exactIso(entry);
+    const identities = new Set<string>();
+    for (const entry of this.countriesByCode.values()) {
+      if (entry.iso3 && matches(entry)) identities.add(entry.iso3);
+    }
+    const today = todayIso();
+    return Array.from(this.countriesByCode.values())
+      .filter(
+        (entry) =>
+          (matches(entry) || (entry.iso3 !== undefined && identities.has(entry.iso3))) &&
+          (roleFilter !== 'reporter' || entry.validAsReporter) &&
+          (roleFilter !== 'partner' || this.partnerCodes.has(entry.id)),
+      )
+      .sort(
+        (a, b) =>
+          Number(exactIso(b)) - Number(exactIso(a)) ||
+          Number(b.validAsReporter) - Number(a.validAsReporter) ||
+          Number(isExpired(a, today)) - Number(isExpired(b, today)) ||
+          a.name.localeCompare(b.name) ||
+          a.id - b.id,
+      );
   }
 
   /**
@@ -306,6 +439,11 @@ export class ComtradeReferenceService {
     return results;
   }
 
+  /**
+   * Fetch one reference catalog and parse it row by row. A row failing the schema is dropped and
+   * logged with its position; fewer than half valid rows throws `SerializationError`, since that
+   * is schema drift rather than a stray row. An empty catalog is returned as-is.
+   */
   private async fetchJson<T>(
     filename: string,
     schema: z.ZodType<T>,
@@ -350,15 +488,45 @@ export class ComtradeReferenceService {
       parsed !== null && typeof parsed === 'object' && 'results' in parsed
         ? parsed.results
         : parsed;
-    const result = z.array(schema).safeParse(entries);
-    if (!result.success) {
+    if (!Array.isArray(entries)) {
+      throw serializationError('Comtrade returned invalid reference entries. Retry later.', {
+        filename,
+      });
+    }
+    const rows: T[] = [];
+    const droppedRows: { index: number; issues: string[] }[] = [];
+    let firstError: z.ZodError | undefined;
+    entries.forEach((entry, index) => {
+      const result = schema.safeParse(entry);
+      if (result.success) {
+        rows.push(result.data);
+        return;
+      }
+      firstError ??= result.error;
+      droppedRows.push({
+        index,
+        issues: result.error.issues.map(
+          (issue) => `${issue.path.map(String).join('.') || '(row)'}: ${issue.message}`,
+        ),
+      });
+    });
+    if (rows.length * 2 < entries.length) {
       throw serializationError(
         'Comtrade returned invalid reference entries. Retry later.',
-        { filename },
-        { cause: result.error },
+        { filename, invalidRowCount: droppedRows.length, rowCount: entries.length },
+        { cause: firstError },
       );
     }
-    return result.data;
+    if (droppedRows.length > 0) {
+      logger.warning(
+        `Dropped ${droppedRows.length} invalid row(s) from ${filename}; serving the other ${rows.length}.`,
+        requestContextService.createRequestContext({
+          operation: 'ComtradeReferenceService.fetchJson',
+          additionalContext: { filename, droppedRows },
+        }),
+      );
+    }
+    return rows;
   }
 }
 

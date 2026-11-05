@@ -118,6 +118,31 @@ describe('hsClassificationResource', () => {
     expect(result.codes.every((c) => c.parent === undefined)).toBe(true);
   });
 
+  it('excludes the level-0 TOTAL from every level, leaving the other codes unchanged', () => {
+    const svc = seedReferenceService();
+    // @ts-expect-error — seeding private map
+    svc.hsByCode.set('TOTAL', {
+      id: 'TOTAL',
+      text: 'Total - All H6 commodities',
+      parent: '#',
+      aggrLevel: 0,
+      isLeaf: false,
+      recommendedQueryCode: 'TOTAL',
+    });
+    for (const [level, ids] of [
+      ['2', ['84', '09']],
+      ['4', ['8471']],
+      ['6', ['847130']],
+    ] as const) {
+      const result = hsClassificationResource.handler(
+        hsClassificationResource.params.parse({ level }),
+        createMockContext(),
+      );
+      expect(result.codes.map((code) => code.id)).toEqual(ids);
+      expect(result.totalCount).toBe(ids.length);
+    }
+  });
+
   it('list() returns resource descriptors for all three levels', () => {
     const listing = hsClassificationResource.list!();
     expect(listing.resources).toHaveLength(3);
