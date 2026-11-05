@@ -39,13 +39,13 @@ International merchandise and services trade statistics from UN Comtrade. Resolv
 |:-----|:------------|
 | `comtrade_lookup_countries` | Resolve country and area names to Comtrade M49 numeric codes. |
 | `comtrade_search_commodities` | Find HS or SITC commodity codes in a selected edition by keyword, description, or code prefix. |
-| `comtrade_list_service_categories` | Find service trade categories in Comtrade's combined EB catalog by keyword or parent code. |
+| `comtrade_list_service_categories` | Find service trade categories in Comtrade's combined EB catalog, tagged with their EBOPS schemes, by keyword or parent code. |
 | `comtrade_get_trade_flows` | Fetch bilateral trade flow records — value, quantity, and weight per period/commodity/partner. |
 | `comtrade_get_trade_balance` | Compute a country's trade balance (exports minus imports) across one or more periods. |
 | `comtrade_get_top_partners` | Rank trading partners by trade value for a reporter, commodity, and flow direction. |
 | `comtrade_get_top_commodities` | Rank commodity categories by trade value for a reporter and flow direction. |
 | `comtrade_get_data_availability` | Check which reporter/period/classification combinations have published data. |
-| `comtrade_get_services_trade` | Fetch international trade-in-services data (EBOPS 2010). |
+| `comtrade_get_services_trade` | Fetch international trade-in-services data — EB as reported (EB10, EB10S, or EB02 codes), or UN Comtrade's converted EB10/EB02 series. |
 
 ### Resources
 
@@ -61,56 +61,59 @@ Country and HS reference data are also reachable through `comtrade_lookup_countr
 
 ### `comtrade_lookup_countries` <sub>tool</sub>
 
-- Accepts a partial or full country name, or an ISO alpha-2/alpha-3 code; `role` filters to `"reporter"`, `"partner"`, or `"any"` (default)
-- `validAsReporter` flag on each match — regional groupings (e.g. World, EU) are valid partners but not valid reporters
+- Accepts a partial or full country name, or an ISO alpha-2/alpha-3 code; `role` filters to `"reporter"`, `"partner"` (only entries in UN's partner-area list), or `"any"` (default)
+- `validAsReporter` flag on each match — most regional groupings (e.g. World) are partner-only, but some report (e.g. the European Union, 97)
 - `include_groups` (default `true`) toggles regional/economic groupings in the results
-- ISO matches and shared country identities put valid reporters first; reporter and partner-only area codes remain distinct
-- Country references load from UN static files at startup — no subscription key required
+- Each match also pulls in entries sharing its ISO-3 identity, ordered exact ISO match, reporter-valid, current before expired, name, then code; reporter and partner-only area codes remain distinct
+- `entryEffectiveDate` and `entryExpiredDate` (`YYYY-MM-DD`) give each entity's validity, so historical entities (e.g. Fed. Rep. of Germany, ...1990) sort after current ones
+- Country references load from UN static files at startup — no subscription key required. Rows that fail validation are dropped and logged; startup fails on an empty catalog or when fewer than half a file's rows are valid
 
 ---
 
 ### `comtrade_search_commodities` <sub>tool</sub>
 
-- Free-text keyword, partial description, or code-prefix search; `classification` selects the current `HS` reference, an HS edition `H0`–`H6`, or SITC `SS`/`S1`–`S4`
-- `aggr_level` uses the selected catalog's native levels: HS chapters/headings/subheadings use `2`/`4`/`6`; SITC has levels `1`–`5`. Omit for all levels
-- `limit` defaults to 50; values above 200 return all matches. `truncated: true` when matches exceed a smaller limit
-- `recommendedQueryCode` on each result — the best code to pass as `cmd_code` in trade queries
+- Free-text keyword, partial description, or code-prefix search; `classification` (case-insensitive, default `HS`) selects the current `HS` reference, an HS edition `H0`–`H6`, or SITC `SS`/`S1`–`S4`
+- `aggr_level` uses the selected catalog's native levels: HS chapters/headings/subheadings use `2`/`4`/`6`; SITC has levels `1`–`5`. Omit for all levels. The HS all-commodities `TOTAL` is level 0, which no `aggr_level` filter returns
+- `limit` (default 50) is the page size; `totalMatches`, `shown`, and `truncated` describe the page, and `offset` with the returned `nextOffset` continues it
+- `recommendedQueryCode` on each result — the code to pass as `cmd_code` in trade queries, with the same `classification`
 
 ---
 
 ### `comtrade_list_service_categories` <sub>tool</sub>
 
-- Lists the combined EB service categories, optionally filtered by keyword or `parent_code`; numeric and alphabetic codes are distinct entries
-- `limit` defaults to 100; values above 500 return all categories. `truncated: true` when matches exceed a smaller limit
+- Lists the combined EB service categories, optionally filtered by keyword or `parent_code`; numeric and alphabetic codes are distinct entries. `parent_code: "200"` lists the EB10 and EB02 top levels
+- `schemes` on each category names the EBOPS scheme catalogs that list its code (`EB10`, `EB10S`, `EB02`); it is empty when none does and absent, with a notice, when the scheme catalogs could not be loaded. `ebParent` carries the parent the combined EB catalog gives a code when it differs from `parent` (`TOTAL` for EB10's top-level codes, whose `parent` is `200`)
+- `limit` (default 100) is the page size; `totalMatches`, `shown`, and `truncated` describe the page, and `offset` with the returned `nextOffset` continues it
 - Returned `id` is the `service_code` for `comtrade_get_services_trade`
 
 ---
 
 ### `comtrade_get_trade_flows` <sub>tool</sub>
 
-- Accepts a scalar `reporter_code` or an array; omission requires an explicit `partner_code`. Reporter arrays serve the first 20 distinct codes and disclose the remainder in `unservedReporters`
-- Requires `flow_code` (`M` import / `X` export / `RX` re-export / `RM` re-import) and `period` values (`YYYY` for `freq: "A"`, `YYYYMM` for `freq: "M"`). Up to 120 periods are accepted but only the first 12 are served; the rest are listed in `unservedPeriods`
-- `partner_code: 0` returns the World total; omit it for a per-partner breakdown. `classification` supports `HS`, `H0`–`H6`, and SITC `S1`–`S4`/`SS`. Explicit HS editions require authenticated data access; keyless `HS` returns as-reported editions, identified by each row's `classificationCode`
+- Accepts a scalar `reporter_code` or an array; omission requires an explicit `partner_code`. Reporter arrays serve the first 20 distinct codes and disclose the remainder in `unservedReporters`. Served codes of an array that return no rows are listed in `reportersWithoutRecords` (`referenceStatus`, optional `suggestedReporterCode`; omitted when the response is truncated). A scalar partner-only code with no rows gets a notice naming its reporter-valid counterpart (250 → 251)
+- Requires `flow_code` (`M` import / `X` export / `RX` re-export / `RM` re-import) and `period` values, all `YYYY` or all `YYYYMM`. `freq` is optional: it is inferred from the period length, mixed lengths are rejected, and an explicit value must match. Up to 120 periods are accepted; keyless calls serve the first 8 (12 with a subscription key). Periods past the cap, or whose request is rate limited or runs out of time, are listed in `unservedPeriods` with a notice; if every period fails the call returns `rate_limited` or `deadline_exceeded`
+- `partner_code: 0` returns the World total; omit it for a per-partner breakdown. `classification` (case-insensitive, default `HS`) supports `HS`, `H0`–`H6`, and SITC `S1`–`S4`/`SS`. Explicit HS editions require authenticated data access; keyless `HS` returns as-reported editions, identified by each row's `classificationCode`
 - `cmd_code[]` accepts up to 200 codes and serves the first 20, listing the rest in `unservedCmdCodes`; omit it or pass `["TOTAL"]` for cross-commodity totals. `truncated: true` plus `truncationHint` means the response hit the 500-record cap; `isReported` separates directly reported rows from UN-estimated ones
-- Quantity and alternate quantity retain unit codes/abbreviations and estimation flags where available. Unit code `-1` means unavailable; missing values are not zero
+- Quantity and alternate quantity retain unit codes/abbreviations and estimation flags where available. UN Comtrade sends `0` for what it does not report, so `qty`/`altQty` of 0 with unit code `-1`, and `netWgt`/`grossWgt`/`cifvalue`/`fobvalue` of 0 beside a positive `primaryValue`, are omitted: an absent field means not reported, not zero. A 0 in a real unit stays a measurement
 
 ---
 
 ### `comtrade_get_trade_balance` <sub>tool</sub>
 
 - Returns `balanceUsd` (signed), `exportsUsd`, `importsUsd`, and `coverageRatio` (exports / imports) per period. Optional `cmd_code[]` restricts the balance to HS or SITC commodities
-- `partner_code` defaults to World (`0`); a country code computes the reporter's bilateral balance and is echoed with the partner name
-- Serves 12 periods and 20 codes per call (accepts up to 120 and 200), listing the rest in `unservedPeriods`/`unservedCmdCodes`. A `notice` warns when either flow hit the 500-record cap and the balance may be incomplete
+- `partner_code` defaults to World (`0`); a country code computes the reporter's bilateral balance and is echoed with the partner name. `classification` is case-insensitive with default `HS`; `freq` is optional and inferred from the period length (mixed lengths are rejected; an explicit value must match)
+- Accepts up to 120 periods and 200 codes. Keyless calls serve the first 4 periods (two requests each; 12 with a subscription key) and 20 codes, listing the rest in `unservedPeriods`/`unservedCmdCodes`; a period is served only when both flows complete, and one whose export or import request is rate limited or runs out of time is listed too. A `notice` warns when either flow hit the 500-record cap and the balance may be incomplete
+- A partner-only reporter code (0 World, 250 Metropolitan France) with no data fails with `partner_only_reporter`, naming the reporter-valid counterpart when one exists (250 → 251)
 - `mirrorCaveat` on every response: the balance reflects this reporter's own values, not the partner's mirror data
 
 ---
 
 ### `comtrade_get_top_partners` <sub>tool</sub>
 
-- Takes one `reporter_code`, `flow_code` (`M`/`X`), and single `period`; optional single `cmd_code` (omit for total merchandise trade)
+- Takes one `reporter_code`, `flow_code` (`M`/`X`), and single `period`; optional single `cmd_code` (omit for total merchandise trade) in the selected `classification` (case-insensitive, default `HS`; `H0`–`H6` with a subscription key, SITC `S1`–`S4`/`SS`)
 - Infers annual or monthly frequency from the period; monthly values require a calendar month from `01` through `12`
-- Returns up to `limit` partners (default 10; above 50 returns all retrieved), each with `rank`, `primaryValueUsd`, and `sharePercent`
-- `truncated: true` when the fetch hit the 500-record cap
+- Returns the top `limit` partners (default 10; any larger value is honored, with no return-all threshold), each with `rank`, `primaryValueUsd`, and `sharePercent`; `totalPartners` and `totalValueUsd` cover every partner retrieved, and shares divide by `totalValueUsd`; `classification` names the catalog the `cmd_code` was read in
+- `truncated: true` when the fetch hit the 500-record cap. An empty result for a partner-only reporter code ends its notice with the reporter-valid counterpart (250 → 251)
 
 ---
 
@@ -118,31 +121,34 @@ Country and HS reference data are also reachable through `comtrade_lookup_countr
 
 - Takes one `reporter_code`, `flow_code`, and single `period`; `aggr_level` is `2` (HS chapter, default) or `4` (heading). `partner_code` defaults to World (`0`); set it to scope to one partner
 - Infers frequency from `period`. Fetches matching `TOTAL` to identify the reporter's HS edition, then queries that edition's category codes in paced chunks, splitting capped chunks
-- Returns up to `limit` categories (default 10; above 50 returns all retrieved). Complete coverage permits ranks; shares use `denominatorValueUsd` from `TOTAL`, while `totalValueUsd` remains the sum of retrieved categories
-- `coverageComplete`, `coverageNotice`, and `missingCodes` describe retrieval. Incomplete results retain available categories without ranks or shares; `truncated` remains true. Ranking can require several upstream requests
+- Returns the top `limit` categories (default 10; any larger value is honored, with no return-all threshold). Complete coverage permits ranks; shares use `denominatorValueUsd` from `TOTAL`, while `totalValueUsd` and `totalCommodities` cover every category retrieved
+- `coverageComplete`, `coverageNotice`, and `missingCodes` describe retrieval; codes not reached within the call's time budget are listed in `missingCodes`. Incomplete results retain available categories without ranks or shares; `truncated` remains true. A `TOTAL` with no rows ends the ranking with an empty result and `truncated: false`; for a partner-only reporter code its notice names the reporter-valid counterpart. Ranking can require several upstream requests
 
 ---
 
 ### `comtrade_get_data_availability` <sub>tool</sub>
 
-- All filters optional — `reporter_code`, `period`, `freq` (`A`/`M`, default `A`), `type_code` (`C` goods / `S` services, default `C`), `classification` (omitted or blank resolves to `HS` for goods, `EB10` for services; upstream identifiers such as `B4` and `B5` are also accepted)
+- All filters optional — `reporter_code`, `period`, `freq` (`A`/`M`; inferred from `period`, `A` when `period` is omitted, and an explicit value must match it), `type_code` (`C` goods / `S` services, default `C`), `classification` (omitted or blank resolves to `HS` for goods, `EB10` for services; upstream identifiers such as `B4` and `B5` are also accepted)
 - Returns per-dataset `totalRecords`, `firstReleased`, and `lastReleased` where available; omit all filters to browse goods availability
 - `limit` defaults to 50 and `offset` to 0. Results are sorted before slicing; `totalDatasets`, `shown`, and `nextOffset` support stable page traversal. `truncated` identifies a partial page. Paging still fetches the matching upstream availability list
+- An empty result for a partner-only reporter code ends its notice with the reporter-valid counterpart (250 → 251)
 - Annual data typically publishes 3–12 months after the reference year — call this before querying recent periods
 
 ---
 
 ### `comtrade_get_services_trade` <sub>tool</sub>
 
-- Takes one `reporter_code`, `flow_code` (`M` imports/debits, `X` exports/credits), annual `period` values (`YYYY`), and optional `partner_code` (`0` for all partners combined). Serves the first 12 of up to 120 periods, listing the rest in `unservedPeriods`
-- Queries the combined `EB` data route; availability uses `EB10`. `service_code` filters to one category from `comtrade_list_service_categories` (`3` is transport; `SA` is manufacturing services). Returned `classificationCode` identifies the row's classification
+- Takes one `reporter_code`, `flow_code` (`M` imports/debits, `X` exports/credits), annual `period` values (`YYYY`), and optional `partner_code` (`0` for all partners combined). Up to 120 periods are accepted; keyless calls serve the first 8 (12 with a subscription key). Periods past the cap, or whose request is rate limited or runs out of time, are listed in `unservedPeriods` with a notice
+- `classification` (case-insensitive, default `EB`; blank means `EB`) selects EB as reported, with each reporter-period in its own scheme (EB10, EB10S, or EB02 codes), or UN Comtrade's converted `EB10`/`EB02` series. `EB10S` has no converted series and is rejected; its rows are served only under `EB`. Each row's `classificationCode` identifies its classification and `isOriginalClassification` says whether it is as reported or converted
+- `service_code` filters to one category from `comtrade_list_service_categories` (`3` is transport; `SA` is manufacturing services), which lists each code's `schemes`. Omit it to get every reported category at mixed levels, with totals (`200` for EB10 and EB02, `S` for EB10S) beside their components: don't sum the rows
+- An empty result's notice names the code's scheme, routes to `comtrade_get_data_availability` with `classification: "EB"`, and suggests the converted series when one applies; for a partner-only reporter it names the reporter-valid counterpart
 - `truncated: true` plus `truncationHint` when the response hit the 500-record cap. Country and period coverage is more limited than for goods
 
 ---
 
 ### `comtrade://countries` <sub>resource</sub>
 
-- Complete country/area list as `application/json` — M49 code, ISO identifiers, `validAsReporter`, and `isGroup`
+- Complete country/area list as `application/json` — M49 code, ISO identifiers, `validAsReporter`, `isGroup`, and `entryEffectiveDate`/`entryExpiredDate` (`YYYY-MM-DD`) where upstream lists them
 - Loaded from the same startup reference cache `comtrade_lookup_countries` searches
 
 ---
@@ -158,7 +164,7 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 Comtrade-specific:
 
-- Country codes, current HS hierarchy, and EB categories load from UN static files at startup; historical HS/SITC editions and quantity units load lazily and cache successful responses
+- Country codes, current HS hierarchy, and EB categories load from UN static files at startup; historical HS/SITC editions, quantity units, and the `EB10.json`/`EB10S.json`/`EB02.json` scheme catalogs (category scheme tags and the services empty-result notice) load lazily and cache successful responses. Invalid rows in a reference file are dropped and logged; startup fails on an empty catalog or when fewer than half a file's rows are valid
 - Authenticated (`data/v1/get`) and public preview (`public/v1/preview`) endpoints — tools fall back to the preview endpoint when no subscription key is set
 - Parallel sub-request execution in workflow tools (`comtrade_get_trade_balance` runs export and import fetches concurrently)
 - Retry with exponential backoff on transient failures, honoring an upstream `Retry-After` header when present
@@ -175,7 +181,7 @@ Agent-friendly output:
 
 ### Public Hosted Instance
 
-A public instance is available at `https://un-comtrade.caseyjhand.com/mcp` — no installation required. It runs on the keyless public preview endpoint (500 records per upstream request), splitting served periods into paced requests at least one second apart. Balance needs two requests per period, so longer arrays take more time. Point any MCP client at it via Streamable HTTP:
+A public instance is available at `https://un-comtrade.caseyjhand.com/mcp` — no installation required. It runs on the keyless public preview endpoint (500 records per upstream request), splitting served periods into paced requests that start at least 4 seconds apart. Each call serves 8 periods for flows and services and 4 for balance (two requests per period); periods past that, or that fail, come back in `unservedPeriods`. Point any MCP client at it via Streamable HTTP:
 
 ```json
 {

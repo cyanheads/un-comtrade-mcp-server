@@ -13,15 +13,15 @@ Use UN Comtrade for reported international merchandise and services trade. It do
 
 ## Identifiers
 
-- Resolve countries with `comtrade_lookup_countries` for the intended role. A partner area can be invalid as a reporter. Select the returned reporting identity rather than a familiar ISO numeric code: Comtrade's USA reporter is 842, while the similarly named 840 entry is not reporter-valid. `comtrade://countries` enumerates the reference entries when browsing is needed.
+- Resolve countries with `comtrade_lookup_countries` for the intended role. A partner area can be invalid as a reporter (World, Metropolitan France 250), while some groupings report (European Union, 97); `validAsReporter` and `role` settle it. Select the returned reporting identity rather than a familiar ISO numeric code: Comtrade's USA reporter is 842, while the similarly named 840 entry is not reporter-valid. `comtrade://countries` enumerates the reference entries when browsing is needed.
 - Discover goods through `comtrade_search_commodities`. Keep codes as strings, including leading zeros. The default HS catalog is useful for discovery; use the selected HS edition or SITC revision for historical meanings. `comtrade://hs-classification/{level}` navigates the default HS hierarchy, not historical editions.
-- Discover services through `comtrade_list_service_categories`, which searches the combined EB catalog. Use its returned category and description together; numeric and SDMX category schemes coexist, so a familiar-looking code is not proof of meaning.
+- Discover services through `comtrade_list_service_categories`, which searches the combined EB catalog. Use its returned category and description together; numeric and SDMX category schemes coexist, so a familiar-looking code is not proof of meaning. Each category's `schemes` tags name the scheme catalogs (EB10, EB10S, EB02) that list its code.
 
 ## Gates
 
 1. Before calling missing records zero trade, confirm the reporting identity, category, period, frequency, and classification. Check matching data availability; a published dataset does not guarantee a particular bilateral commodity row exists. Follow availability continuation before claiming the matching index is exhausted.
 2. Before comparing historical goods, inspect each row's `classificationCode`. The same commodity code can change meaning across editions. Default HS queries return as-reported data, not a conversion to one common edition. Explicit HS editions are unavailable on keyless trade-data preview; do not silently replace an edition-converted request with HS.
-3. Before reporting a complete series or ranking, inspect truncation, coverage, reference notices, and unserved inputs. Retrieve remaining periods or codes separately. Missing descriptions do not justify guessing a commodity's meaning.
+3. Before reporting a complete series or ranking, inspect truncation, coverage, reference notices, and unserved inputs: `unservedPeriods`, `unservedReporters`, `unservedCmdCodes`, and `reportersWithoutRecords`. Retrieve remaining periods, reporters, or codes separately. A reporter listed in `reportersWithoutRecords` returned no rows; read its `referenceStatus` and `suggestedReporterCode` before concluding it has no trade, since a partner-only code such as 250 reports as 251. Missing descriptions do not justify guessing a commodity's meaning.
 4. Before summing goods, choose one aggregation level and exclude overlapping parent/child codes and TOTAL rows from the same sum. World totals and country breakdowns are alternative views; do not add them together.
 5. Before computing balances or comparing mirror flows, align period, commodity definition, and reporting perspective. A missing import or export value is not zero. Preserve caveats about CIF/FOB valuation, timing, re-exports, and country definitions.
 
@@ -37,7 +37,7 @@ Use `comtrade_get_trade_flows` for the time series. Select World for an overall 
 
 Use `comtrade_get_top_commodities` for the product mix and `comtrade_get_top_partners` for suppliers or destinations of a selected product. Follow ranked entries into trade flows when quantities or historical detail are needed.
 
-For commodity rankings, require `coverageComplete` before describing results as the leading categories. Read `coverageNotice` and unresolved-code metadata when coverage is incomplete; absent ranks or shares are not invitations to calculate them from the partial rows. `denominatorValueUsd` is matching TOTAL, while `totalValueUsd` is the retrieved-category sum. For partner rankings, the share denominator is the sum of returned partners; do not describe it as a World-total share without checking that total separately.
+For commodity rankings, require `coverageComplete` before describing results as the leading categories. Read `coverageNotice` and unresolved-code metadata when coverage is incomplete; absent ranks or shares are not invitations to calculate them from the partial rows. `denominatorValueUsd` is matching TOTAL, while `totalValueUsd` is the retrieved-category sum. For partner rankings, the share denominator is `totalValueUsd`, the sum of every retrieved partner rather than only those shown; do not describe it as a World-total share without checking that total separately.
 
 ### Bilateral balance and mirror evidence
 
@@ -47,10 +47,10 @@ For peer comparisons, `comtrade_get_trade_flows` accepts one reporter or several
 
 ### Services comparison
 
-Use the services category catalog, not goods codes. Services trade queries use combined EB, while services availability defaults to EB10; the availability classification and the row's actual classification serve different purposes. Inspect returned row classifications and category meanings before combining countries or years. This server's services queries are annual. From the reporter's perspective, imports are debits and exports are credits.
+Use the services category catalog, not goods codes. Services trade queries default to EB, which serves each reporter-period in the scheme it was reported in; `classification` EB10 or EB02 selects UN Comtrade's converted series instead, and EB10S rows exist only under EB. Services availability defaults to EB10, so the availability classification and the row's actual classification serve different purposes: check availability with `classification: "EB"` to see the scheme each period was reported in. Inspect each row's `classificationCode` and `isOriginalClassification` (as reported or converted) and the category meanings before combining countries or years. A `service_code` returns rows only for periods reported in its scheme under EB. Omitting `service_code` returns every reported category at mixed levels, with totals (`200` for EB10 and EB02, `S` for EB10S) beside their components; never sum those rows. This server's services queries are annual. From the reporter's perspective, imports are debits and exports are credits.
 
 ### Unit values
 
-Use trade-flow records with a known value and a positive quantity in a known unit, or a positive net weight in kilograms. Read quantity-unit metadata and the quantity/weight estimation flags before computing a ratio. An absent flag does not establish that a value was measured. Never infer quantity units from the commodity code or combine quantities in unlike units.
+Use trade-flow records with a known value and a positive quantity in a known unit, or a positive net weight in kilograms. An absent `qty`, `netWgt`, or unit means the value was not reported; the server omits UN Comtrade's placeholder zeros, so never treat absence as zero. Read quantity-unit metadata and the quantity/weight estimation flags before computing a ratio. An absent flag does not establish that a value was measured. Never infer quantity units from the commodity code or combine quantities in unlike units.
 
 Report the ratio as a trade unit value, with its unit, valuation basis, period, product scope, and estimation caveats. Customs trade values divided by quantities are not observed transaction prices; product mix and reporting differences can change the ratio without a price change.
