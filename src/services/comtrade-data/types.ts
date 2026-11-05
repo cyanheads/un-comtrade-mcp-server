@@ -27,15 +27,31 @@ export interface TradeDataParams {
   typeCode?: 'C' | 'S';
 }
 
+/** Why a requested period was not served. */
+export type TradePeriodFailureReason = 'rate_limited' | 'deadline_exceeded';
+
+/** A requested period whose request failed transiently; the call still returns the periods that completed. */
+export interface TradePeriodFailure {
+  period: string;
+  /**
+   * `rate_limited`: UN Comtrade answered 429 through every retry, or the budget ran out after
+   * its last answer was a 429. `deadline_exceeded`: the period could not start (no preview slot
+   * opened in time) or finish within the call's time budget.
+   */
+  reason: TradePeriodFailureReason;
+  /** Seconds UN Comtrade or the preview queue stated as the wait, when stated. */
+  retryAfterSeconds?: number;
+}
+
 /** A single trade flow record returned by the Comtrade API. */
 export interface TradeFlowRecord {
   /** Commodity aggregation level supplied by UN Comtrade. */
   aggrLevel?: number;
-  /** Alternate quantity and its independent unit. */
+  /** Alternate quantity in its own unit; absent when not reported (0 with unit code -1). */
   altQty?: number;
   altQtyUnitAbbr?: string;
   altQtyUnitCode?: number;
-  /** CIF value (imports only). */
+  /** CIF value in USD; absent when not reported (0 beside a positive trade value). */
   cifvalue?: number;
   /** Actual classification edition supplied on the upstream row. */
   classificationCode?: string;
@@ -45,16 +61,18 @@ export interface TradeFlowRecord {
   cmdDesc: string;
   /** Trade flow code. */
   flowCode: string;
-  /** FOB value (exports only). */
+  /** FOB value in USD; absent when not reported (0 beside a positive trade value). */
   fobvalue?: number;
-  /** Gross weight in kg. */
+  /** Gross weight in kg; absent when not reported (0 beside a positive trade value). */
   grossWgt?: number;
   isNetWgtEstimated?: boolean;
+  /** Whether the row is in the scheme the reporter originally used (false: converted by UN Comtrade). */
+  isOriginalClassification?: boolean;
   /** Upstream estimation flags, absent when not supplied. */
   isQtyEstimated?: boolean;
   /** Whether directly reported (true) or estimated/aggregated (false). */
   isReported?: boolean;
-  /** Net weight in kg. */
+  /** Net weight in kg; absent when not reported (0 beside a positive trade value). */
   netWgt?: number;
   /** M49 partner code. */
   partnerCode: number;
@@ -64,7 +82,7 @@ export interface TradeFlowRecord {
   period: string;
   /** Primary value in USD (FOB for exports, CIF for imports). */
   primaryValue?: number;
-  /** Quantity (in commodity-specific units). */
+  /** Quantity in commodity-specific units; absent when not reported (0 with unit code -1). */
   qty?: number;
   qtyUnitAbbr?: string;
   /** Quantity unit identity and abbreviation; -1/N/A means unavailable. */

@@ -58,9 +58,10 @@ afterEach(() => {
 it.each([undefined, 0, 156])(
   'uses AG selectors and World default with partner %s',
   async (partner_code) => {
+    // Upstream TOTAL rows without the aggregate row identify no edition, so the AG selector runs.
     const spy = vi
       .spyOn(ComtradeDataService.prototype, 'fetchTradeData')
-      .mockResolvedValue({ records: [], totalCount: 0, truncated: false });
+      .mockResolvedValue({ records: [], totalCount: 2, truncated: false });
     await getTopCommoditiesTool.handler(
       getTopCommoditiesTool.input.parse({
         reporter_code: 842,
@@ -74,6 +75,7 @@ it.each([undefined, 0, 156])(
     expect(spy).toHaveBeenCalledWith(
       expect.objectContaining({ cmdCode: 'AG4', partnerCode: partner_code ?? 0 }),
       expect.anything(),
+      expect.any(Number),
     );
     expect(spy.mock.calls[0]![0]).not.toHaveProperty('aggrLevel');
   },
@@ -143,10 +145,13 @@ it.each(['S1', 'S2', 'S3', 'S4', 'SS'])(
       period: ['2022'],
       classification,
     });
+    // Both flows share one deadline (epoch ms) passed as the third argument.
     expect(spy).toHaveBeenCalledWith(
       expect.objectContaining({ classificationCode: classification, typeCode: 'C' }),
       expect.anything(),
+      expect.any(Number),
     );
+    expect(spy.mock.calls[0]![2]).toBe(spy.mock.calls[1]![2]);
     expect(result.isError).not.toBe(true);
     expect(JSON.stringify(result.structuredContent)).toContain('may be incomplete');
     expect(JSON.stringify(result.content)).toContain('may be incomplete');
@@ -199,17 +204,25 @@ it('bounded arrays serve their caps and name unserved inputs on both surfaces', 
       period: periods,
     }),
   ];
-  for (const result of runs) {
+  // Keyless: flows and services serve 8 periods (one request each), balance 4 (two each).
+  for (const [result, served] of [
+    [runs[0]!, 8],
+    [runs[1]!, 4],
+    [runs[2]!, 8],
+  ] as const) {
+    const unserved = periods.slice(served);
     expect(result.isError).not.toBe(true);
     expect(result.content).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'text',
-          text: expect.stringContaining('**Unserved periods:** 2012. Query them separately.'),
+          text: expect.stringContaining(
+            `**Unserved periods:** ${unserved.join(', ')}. Query them separately.`,
+          ),
         }),
       ]),
     );
-    expect(result.structuredContent).toMatchObject({ unservedPeriods: ['2012'] });
+    expect(result.structuredContent).toMatchObject({ unservedPeriods: unserved });
   }
   for (const result of runs.slice(0, 2)) {
     expect(result.structuredContent).toMatchObject({ unservedCmdCodes: ['20'] });
@@ -222,10 +235,25 @@ it('bounded arrays serve their caps and name unserved inputs on both surfaces', 
       ]),
     );
   }
-  for (const [params] of spy.mock.calls) {
-    expect(params.period.split(',')).toHaveLength(12);
+  expect(spy.mock.calls.map(([params]) => params.period.split(',').length)).toEqual([8, 4, 4, 8]);
+  for (const [params] of spy.mock.calls)
     if (params.cmdCode) expect(params.cmdCode.split(',')).toHaveLength(20);
+});
+it('authenticated access serves 12 periods for every period-batching tool', async () => {
+  const spy = vi.spyOn(ComtradeDataService.prototype, 'periodsPerCall').mockReturnValue(12);
+  const fetchSpy = vi
+    .spyOn(ComtradeDataService.prototype, 'fetchTradeData')
+    .mockResolvedValue({ records: [record], totalCount: 1, truncated: false });
+  for (const [tool, args] of [
+    [getTradeFlowsTool, { reporter_code: 842, flow_code: 'X', period: periods }],
+    [getTradeBalanceTool, { reporter_code: 842, period: periods }],
+    [getServicesTradeTool, { reporter_code: 842, flow_code: 'X', period: periods }],
+  ] as const) {
+    const result = await runToolContract(tool, args);
+    expect(result.structuredContent).toMatchObject({ unservedPeriods: ['2012'] });
   }
+  expect(spy).toHaveBeenCalled();
+  for (const [params] of fetchSpy.mock.calls) expect(params.period.split(',')).toHaveLength(12);
 });
 it.each([
   ['C', undefined, 'HS'],
@@ -264,28 +292,7 @@ it.each([
     expect(JSON.stringify(surface)).not.toContain('publicationDate');
   }
 });
-it('output-only oversized limits return all matches and rankings', async () => {
-  const rankingRows = Array.from({ length: 60 }, (_, i) => ({
-    ...record,
-    partnerCode: i + 1,
-    cmdCode: String(i + 10),
-    classificationCode: 'H6',
-  }));
-  vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockImplementation(async (params) => {
-    const records =
-      params.cmdCode === 'TOTAL' && params.partnerCode === 0
-        ? [{ ...record, cmdCode: 'TOTAL', classificationCode: 'H6', primaryValue: 600 }]
-        : rankingRows;
-    return { records, totalCount: records.length, truncated: false };
-  });
-  vi.spyOn(ComtradeReferenceService.prototype, 'getCommodityCodes').mockResolvedValue(
-    new Map(
-      rankingRows.map((row) => [
-        row.cmdCode,
-        { id: row.cmdCode, text: row.cmdDesc, aggrLevel: 2, isLeaf: false },
-      ]),
-    ),
-  );
+it('catalog searches serve oversized limits as exact pages that continue by nextOffset', async () => {
   vi.spyOn(ComtradeReferenceService.prototype, 'searchHsCodes').mockReturnValue(
     Array.from({ length: 220 }, (_, i) => ({
       id: String(i),
@@ -295,36 +302,51 @@ it('output-only oversized limits return all matches and rankings', async () => {
       recommendedQueryCode: String(i),
     })),
   );
-  vi.spyOn(ComtradeReferenceService.prototype, 'getAllEbopsCategories').mockReturnValue(
-    Array.from({ length: 520 }, (_, i) => ({ id: String(i), text: 'test' })),
-  );
-  const partners = await runToolContract(getTopPartnersTool, {
-    reporter_code: 842,
-    flow_code: 'X',
-    period: '2022',
-    limit: 51,
+  vi.spyOn(ComtradeReferenceService.prototype, 'getServiceCategories').mockResolvedValue({
+    status: 'tagged',
+    categories: Array.from({ length: 520 }, (_, i) => ({
+      id: String(i),
+      text: 'test',
+      schemes: [],
+    })),
   });
-  const commodities = await runToolContract(getTopCommoditiesTool, {
-    reporter_code: 842,
-    flow_code: 'X',
-    period: '2022',
-    limit: 51,
-  });
-  const hs = await runToolContract(searchCommoditiesTool, { query: 'test', limit: 201 });
-  const services = await runToolContract(listServiceCategoriesTool, { limit: 501 });
-  expect(partners.structuredContent).toMatchObject({
-    partners: expect.arrayContaining([expect.objectContaining({ rank: 60 })]),
-  });
-  expect(commodities.structuredContent).toMatchObject({
-    commodities: expect.arrayContaining([expect.objectContaining({ rank: 60 })]),
-  });
-  expect(hs.structuredContent).toMatchObject({ shown: 220, truncated: false });
-  expect(services.structuredContent).toMatchObject({ shown: 520, truncated: false });
-  expect(JSON.stringify(partners.content)).toContain('**#60.');
-  expect(JSON.stringify(commodities.content)).toContain('**#60.');
-  expect(JSON.stringify(hs.content)).toContain('**219** — test');
-  expect(JSON.stringify(services.content)).toContain('**519** — test');
-  for (const result of [partners, commodities, hs, services]) expect(result.isError).not.toBe(true);
+  type Page = { limit: number; offset?: number };
+  for (const [run, key, total, limit] of [
+    [
+      (page: Page) => runToolContract(searchCommoditiesTool, { query: 'test', ...page }),
+      'matches',
+      220,
+      201,
+    ],
+    [(page: Page) => runToolContract(listServiceCategoriesTool, page), 'categories', 520, 501],
+  ] as const) {
+    const first = await run({ limit });
+    const second = await run({ limit, offset: limit });
+    expect(first.structuredContent).toMatchObject({
+      totalMatches: total,
+      shown: limit,
+      truncated: true,
+      offset: 0,
+      nextOffset: limit,
+    });
+    expect(second.structuredContent).toMatchObject({
+      totalMatches: total,
+      shown: total - limit,
+      offset: limit,
+    });
+    expect(second.structuredContent).not.toHaveProperty('nextOffset');
+    const ids = [first, second].flatMap((result) =>
+      (result.structuredContent as Record<typeof key, { id: string }[]>)[key].map(
+        (entry) => entry.id,
+      ),
+    );
+    expect(ids).toEqual(Array.from({ length: total }, (_, i) => String(i)));
+    expect(JSON.stringify(first.content)).toContain(`**${limit - 1}** — test`);
+    expect(JSON.stringify(first.content)).not.toContain(`**${limit}** — test`);
+    expect(JSON.stringify(first.content)).toContain(`offset=${limit}`);
+    expect(JSON.stringify(second.content)).toContain(`**${total - 1}** — test`);
+    for (const result of [first, second]) expect(result.isError).not.toBe(true);
+  }
 });
 it('rejects atomic-invalid empty periods and absurd arrays before work', async () => {
   const spy = vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData');

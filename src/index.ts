@@ -54,7 +54,7 @@ await createApp({
   skills: fileURLToPath(new URL('../skills/', import.meta.url)),
 
   instructions:
-    'UN Comtrade international goods and services trade statistics. Resolve country names with comtrade_lookup_countries, goods with comtrade_search_commodities, and services with comtrade_list_service_categories; check comtrade_get_data_availability before interpreting missing data. Reporter and partner identifiers are Comtrade numeric codes, not inferred ISO numbers. Keyless preview uses paced requests with a 500-record cap per upstream response; inspect coverage and unserved-input notices before drawing conclusions. Configure COMTRADE_SUBSCRIPTION_KEY for authenticated access subject to subscription limits. Load un-comtrade-guide for historical classifications, complete rankings, bilateral and mirror analysis, and unit-value interpretation.',
+    'UN Comtrade international goods and services trade statistics. Resolve country names with comtrade_lookup_countries, goods with comtrade_search_commodities, and services with comtrade_list_service_categories; check comtrade_get_data_availability before interpreting missing data. Reporter and partner identifiers are Comtrade numeric codes, not inferred ISO numbers. Keyless preview uses paced requests with a 500-record cap per upstream response; inspect coverage, truncation, and unserved-input fields such as unservedPeriods before drawing conclusions. Configure COMTRADE_SUBSCRIPTION_KEY for authenticated access subject to subscription limits. Load un-comtrade-guide for historical classifications, complete rankings, bilateral and mirror analysis, and unit-value interpretation.',
 
   async setup(core) {
     getServerConfig();

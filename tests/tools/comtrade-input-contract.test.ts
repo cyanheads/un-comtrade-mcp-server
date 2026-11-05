@@ -13,12 +13,17 @@ import {
   frequencySchema,
   goodsClassificationSchema,
   periodSchema,
+  periodsMatchFrequency,
+  resolveFrequency,
+  servicesClassificationSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
 import { getDataAvailabilityTool } from '@/mcp-server/tools/definitions/get-data-availability.tool.js';
 import { getServicesTradeTool } from '@/mcp-server/tools/definitions/get-services-trade.tool.js';
 import { getTopPartnersTool } from '@/mcp-server/tools/definitions/get-top-partners.tool.js';
 import { getTradeBalanceTool } from '@/mcp-server/tools/definitions/get-trade-balance.tool.js';
 import { getTradeFlowsTool } from '@/mcp-server/tools/definitions/get-trade-flows.tool.js';
+import { listServiceCategoriesTool } from '@/mcp-server/tools/definitions/list-service-categories.tool.js';
+import { searchCommoditiesTool } from '@/mcp-server/tools/definitions/search-commodities.tool.js';
 import {
   ComtradeDataService,
   initComtradeDataService,
@@ -27,13 +32,19 @@ import {
   ComtradeMetaService,
   initComtradeMetaService,
 } from '@/services/comtrade-meta/comtrade-meta-service.js';
+import { initComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
-beforeEach(() =>
+beforeEach(() => {
   initComtradeDataService(
     {} as Parameters<typeof initComtradeDataService>[0],
     {} as Parameters<typeof initComtradeDataService>[1],
-  ),
-);
+  );
+  // Empty results read reporter status; an unloaded index classifies every code as unknown.
+  initComtradeReferenceService(
+    {} as Parameters<typeof initComtradeReferenceService>[0],
+    {} as Parameters<typeof initComtradeReferenceService>[1],
+  );
+});
 afterEach(() => vi.restoreAllMocks());
 
 it('characterizes scalar reporters, annual defaults, and World requests', async () => {
@@ -83,9 +94,23 @@ it('normalizes supported casing and blank goods selectors before requesting', as
 });
 
 it('infers monthly partner requests', async () => {
-  const spy = vi
-    .spyOn(ComtradeDataService.prototype, 'fetchTradeData')
-    .mockResolvedValue({ records: [], totalCount: 0, truncated: false });
+  const spy = vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockResolvedValue({
+    records: [
+      {
+        reporterCode: 842,
+        reporterDesc: 'USA',
+        partnerCode: 156,
+        partnerDesc: 'China',
+        flowCode: 'M',
+        cmdCode: 'TOTAL',
+        cmdDesc: 'Total',
+        period: '202503',
+        primaryValue: 1,
+      },
+    ],
+    totalCount: 1,
+    truncated: false,
+  });
   await getTopPartnersTool.handler(
     getTopPartnersTool.input.parse({ reporter_code: 842, flow_code: 'M', period: '202503' }),
     createMockContext(),
@@ -102,14 +127,36 @@ it.each(['202500', '202513', '2025-03', '2025031'])(
   },
 );
 it('rejects period/frequency disagreement and monthly services before work', () => {
-  expect(
-    getTradeFlowsTool.input.safeParse({ reporter_code: 842, flow_code: 'M', period: ['202503'] })
-      .success,
-  ).toBe(false);
+  for (const args of [
+    { period: ['2023', '202503'] },
+    { period: ['2023', '202503'], freq: 'M' },
+    { period: ['202503'], freq: 'A' },
+  ])
+    expect(
+      getTradeFlowsTool.input.safeParse({ reporter_code: 842, flow_code: 'M', ...args }).success,
+    ).toBe(false);
   expect(
     getServicesTradeTool.input.safeParse({ reporter_code: 842, flow_code: 'M', period: ['202503'] })
       .success,
   ).toBe(false);
+});
+it.each([
+  [{}, 'A', true],
+  [{ freq: 'M' }, 'M', true],
+  [{ period: '2024' }, 'A', true],
+  [{ period: '202401' }, 'M', true],
+  [{ period: ['2022', '2023'] }, 'A', true],
+  [{ period: ['202401', '202402'] }, 'M', true],
+  [{ period: ['2023', '202401'] }, 'A', false],
+  [{ period: ['202401', '2023'] }, 'M', false],
+  [{ period: ['2023', '202401'], freq: 'A' }, 'A', false],
+  [{ period: ['2023', '202401'], freq: 'M' }, 'M', false],
+  [{ period: ['202401'], freq: 'A' }, 'A', false],
+  [{ period: '2024', freq: 'M' }, 'M', false],
+  [{ period: ['202401'], freq: 'M' }, 'M', true],
+] as const)('resolves frequency %j to %s, accepted: %s', (input, frequency, accepted) => {
+  expect(resolveFrequency(input)).toBe(frequency);
+  expect(periodsMatchFrequency(input)).toBe(accepted);
 });
 it('validates classification-specific goods shapes without reference membership checks', () => {
   const common = { reporter_code: 842, flow_code: 'M', period: ['2022'] };
@@ -256,6 +303,7 @@ it('wires normalized balance codes and frequency, services blank omission, and a
       cmdCode: 'TOTAL',
     }),
     expect.anything(),
+    expect.any(Number),
   );
   await runToolContract(getServicesTradeTool, {
     reporter_code: 842,
@@ -286,6 +334,21 @@ it('wires normalized balance codes and frequency, services blank omission, and a
   }
   expect(getDataAvailabilityTool.input.safeParse({ classification: 'X/Y' }).success).toBe(false);
 });
+it('catalog searches take any positive limit and a non-negative integer offset', () => {
+  for (const [definition, base] of [
+    [searchCommoditiesTool, { query: 'coffee' }],
+    [listServiceCategoriesTool, {}],
+  ] as const) {
+    expect(z.toJSONSchema(definition.input).type).toBe('object');
+    expect(definition.input.parse(base)).toMatchObject({ offset: 0 });
+    expect(definition.input.parse({ ...base, limit: 100_000, offset: 7_858 })).toMatchObject({
+      limit: 100_000,
+      offset: 7_858,
+    });
+    for (const invalid of [{ limit: 0 }, { limit: -1 }, { offset: -1 }, { offset: 1.5 }])
+      expect(definition.input.safeParse({ ...base, ...invalid }).success).toBe(false);
+  }
+});
 it('forwards service reasons and recovery on both tool surfaces', async () => {
   const tools = [
     getTradeFlowsTool,
@@ -296,7 +359,8 @@ it('forwards service reasons and recovery on both tool surfaces', async () => {
   const spy = vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData');
   for (const definition of tools) {
     for (const error of definition.errors ?? []) {
-      if (error.reason === 'no_data') continue;
+      // Tool-thrown reasons (no_data, partner_only_reporter) are not forwarded from the service.
+      if (error.thrownBy !== 'service') continue;
       spy.mockRejectedValue(
         new McpError(error.code, 'Comtrade query failed.', { reason: error.reason }),
       );
@@ -317,3 +381,59 @@ it('forwards service reasons and recovery on both tool surfaces', async () => {
     }
   }
 });
+
+it.each([
+  [' eb ', 'EB'],
+  ['eb10', 'EB10'],
+  [' EB02 ', 'EB02'],
+  [' ', 'EB'],
+  [undefined, 'EB'],
+] as const)('normalizes services classification %j to %j', (input, expected) => {
+  expect(servicesClassificationSchema.parse(input)).toBe(expected);
+});
+it.each([
+  ['EB10S', 'EB10S has no converted series; its rows are served only under EB.'],
+  [' eb10s ', 'EB10S has no converted series; its rows are served only under EB.'],
+  ['HS', 'Use EB as reported, or EB10 or EB02 for UN Comtrade'],
+  ['S2', 'Use EB as reported, or EB10 or EB02 for UN Comtrade'],
+  ['EB2010', 'Use EB as reported, or EB10 or EB02 for UN Comtrade'],
+] as const)('rejects services classification %j, pointing to EB', (input, message) => {
+  const result = servicesClassificationSchema.safeParse(input);
+  expect(result.success).toBe(false);
+  expect(result.error?.issues[0]?.message).toContain(message);
+});
+it('advertises the services classifications and their EB default on the input side tools/list serves', () => {
+  const schema = z.toJSONSchema(getServicesTradeTool.input, { io: 'input' }) as {
+    properties: Record<string, { default?: unknown; enum?: unknown; type?: unknown }>;
+    required?: string[];
+  };
+  expect(schema.properties.classification).toMatchObject({
+    type: 'string',
+    default: 'EB',
+    enum: ['EB', 'EB10', 'EB02'],
+  });
+  expect(schema.required).not.toContain('classification');
+});
+it.each([
+  [searchCommoditiesTool, { query: 'coffee' }],
+  [getTradeFlowsTool, { reporter_code: 842, flow_code: 'M', period: ['2022'] }],
+  [getTradeBalanceTool, { reporter_code: 842, period: ['2022'] }],
+  [getTopPartnersTool, { reporter_code: 842, flow_code: 'M', period: '2022' }],
+] as const)(
+  'advertises goods classification as a plain HS-default string any casing satisfies, for %#',
+  (definition, args) => {
+    const schema = z.toJSONSchema(definition.input, { io: 'input' }) as {
+      properties: Record<string, { default?: unknown; enum?: unknown; type?: unknown }>;
+      required?: string[];
+    };
+    // A client validating against tools/list must not reject a casing the server normalizes.
+    expect(schema.properties.classification).toMatchObject({ type: 'string', default: 'HS' });
+    expect(schema.properties.classification).not.toHaveProperty('enum');
+    expect(schema.required ?? []).not.toContain('classification');
+    expect(definition.input.parse({ ...args, classification: ' h3 ' })).toMatchObject({
+      classification: 'H3',
+    });
+    expect(definition.input.parse(args)).toMatchObject({ classification: 'HS' });
+    expect(definition.input.safeParse({ ...args, classification: 'H7' }).success).toBe(false);
+  },
+);

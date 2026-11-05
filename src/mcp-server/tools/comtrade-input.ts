@@ -17,12 +17,37 @@ export const annualPeriodSchema = z
   .string()
   .trim()
   .regex(/^[0-9]{4}$/, 'Use an annual YYYY period.');
-/** Supported goods classifications; edition capability is checked by the data service. */
+/**
+ * Supported goods classifications; edition capability is checked by the data service. A string
+ * pipe advertises a plain string in tools/list, so clients that validate against the advertised
+ * schema can send any casing the pipe normalizes.
+ */
 export const goodsClassificationSchema = z
   .string()
   .trim()
   .toUpperCase()
   .pipe(z.enum(['HS', 'H0', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'S1', 'S2', 'S3', 'S4', 'SS']));
+/**
+ * Services classifications the trade endpoint serves: EB as reported (the default, also for a
+ * blank value), or UN Comtrade's converted EB10/EB02 series. EB10S is refused: its endpoint
+ * returns nothing, and its rows are served only under EB. A preprocess rather than a string pipe,
+ * so the enum and default survive into the input-side JSON Schema that tools/list advertises.
+ */
+export const servicesClassificationSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const normalized = value.trim().toUpperCase();
+    return normalized === '' ? undefined : normalized;
+  },
+  z
+    .enum(['EB', 'EB10', 'EB02'], {
+      error: (issue) =>
+        issue.input === 'EB10S'
+          ? 'EB10S has no converted series; its rows are served only under EB. Use classification EB.'
+          : "Use EB as reported, or EB10 or EB02 for UN Comtrade's converted series.",
+    })
+    .default('EB'),
+);
 /** Flow grammar for goods. */
 export const goodsFlowSchema = z
   .string()
@@ -50,14 +75,36 @@ export const codeSchema = z
     /^(?:[A-Z0-9]+(?:\.[A-Z0-9]+)*)?$/,
     'Use a numeric, SITC, EBOPS, TOTAL, or AG selector without separators.',
   );
-/** Require periods to agree with the selected endpoint frequency. */
-export function periodsMatchFrequency(input: {
+/** Periods and an optional explicit frequency, as the trade and availability tools accept them. */
+interface FrequencyInput {
+  freq?: 'A' | 'M' | undefined;
   period?: string | string[] | undefined;
-  freq: 'A' | 'M';
-}): boolean {
-  const periods = typeof input.period === 'string' ? [input.period] : (input.period ?? []);
-  return periods.every((period) => period.length === (input.freq === 'A' ? 4 : 6));
 }
+
+/** The frequency a validated period implies: YYYY is annual, YYYYMM monthly. */
+export function periodFrequency(period: string): 'A' | 'M' {
+  return period.length === 6 ? 'M' : 'A';
+}
+
+function periodsOf(input: FrequencyInput): string[] {
+  return typeof input.period === 'string' ? [input.period] : (input.period ?? []);
+}
+
+/** The explicit frequency, else the one the first period implies; annual when no period is given. */
+export function resolveFrequency(input: FrequencyInput): 'A' | 'M' {
+  const [first] = periodsOf(input);
+  return input.freq ?? (first === undefined ? 'A' : periodFrequency(first));
+}
+
+/** Require every period to imply the resolved frequency: one length per call, matching any explicit freq. */
+export function periodsMatchFrequency(input: FrequencyInput): boolean {
+  const frequency = resolveFrequency(input);
+  return periodsOf(input).every((period) => periodFrequency(period) === frequency);
+}
+
+/** Rejection message for a goods code whose shape doesn't fit the selected classification. */
+export const GOODS_CODE_SHAPE_MESSAGE =
+  'Use HS codes with 2, 4 or 6 digits or legacy 9999AA under an HS classification; SITC codes (up to 5 characters, optional trailing X) need classification S1–S4 or SS. TOTAL and classification-specific AG selectors are supported.';
 
 /** Validate goods code shape by classification while leaving reference membership open. */
 export function goodsCodesMatchClassification(input: {

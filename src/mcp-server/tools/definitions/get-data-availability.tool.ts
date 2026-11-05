@@ -11,8 +11,11 @@ import {
   m49Schema,
   periodSchema,
   periodsMatchFrequency,
+  resolveFrequency,
 } from '@/mcp-server/tools/comtrade-input.js';
+import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
 import { getComtradeMetaService } from '@/services/comtrade-meta/comtrade-meta-service.js';
+import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
   title: 'Check Data Availability',
@@ -61,8 +64,10 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
             'Omit to see all available periods for the reporter.',
         ),
       freq: frequencySchema
-        .default('A')
-        .describe('Frequency: A=annual YYYY, M=monthly YYYYMM (01–12).'),
+        .optional()
+        .describe(
+          'Frequency: A=annual YYYY, M=monthly YYYYMM (01–12). Omit to infer it from period, or annual when period is omitted too; an explicit value must match period.',
+        ),
       type_code: z
         .string()
         .trim()
@@ -82,7 +87,8 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
     })
     .refine(periodsMatchFrequency, {
       path: ['period'],
-      message: 'Use YYYY for annual frequency or YYYYMM for monthly frequency.',
+      message:
+        'Use a YYYY period for annual or YYYYMM for monthly frequency, matching any explicit freq.',
     }),
 
   output: z.object({
@@ -137,7 +143,7 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
     const svc = getComtradeMetaService();
     const records = await svc.getDataAvailability(
       {
-        freqCode: input.freq,
+        freqCode: resolveFrequency(input),
         typeCode: input.type_code,
         classificationCode: input.classification || (input.type_code === 'S' ? 'EB10' : 'HS'),
         ...(input.reporter_code !== undefined && { reporterCode: input.reporter_code }),
@@ -147,11 +153,18 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
     );
 
     if (records.length === 0) {
+      const partnerOnly =
+        input.reporter_code === undefined
+          ? undefined
+          : partnerOnlyReporterNotice(
+              input.reporter_code,
+              getComtradeReferenceService().getReporterStatus(input.reporter_code),
+            );
       ctx.enrich.notice(
         `No data availability records found` +
-          (input.reporter_code ? ` for reporter ${input.reporter_code}` : '') +
+          (input.reporter_code !== undefined ? ` for reporter ${input.reporter_code}` : '') +
           (input.period ? `, period ${input.period}` : '') +
-          `. Try a different reporter, period, or classification.`,
+          `. ${partnerOnly ?? 'Try a different reporter, period, or classification.'}`,
       );
       return {
         datasets: [],

@@ -1,5 +1,6 @@
 /**
- * @fileoverview Tool for fetching international trade-in-services data (EBOPS 2010).
+ * @fileoverview Tool for fetching international trade-in-services data (EBOPS: EB as reported,
+ * or UN Comtrade's converted EB10/EB02 series).
  * @module mcp-server/tools/definitions/get-services-trade.tool
  */
 
@@ -10,8 +11,105 @@ import {
   codeSchema,
   flowSchema,
   m49Schema,
+  servicesClassificationSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
-import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
+import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
+import {
+  describePeriodFailures,
+  getComtradeDataService,
+  TRADE_DATA_DEADLINE_MS,
+} from '@/services/comtrade-data/comtrade-data-service.js';
+import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
+import type { EbScheme } from '@/services/comtrade-reference/types.js';
+
+/** A services classification the trade endpoint serves. */
+type ServicesClassification = z.output<typeof servicesClassificationSchema>;
+
+const AVAILABILITY_ROUTE =
+  'Use comtrade_get_data_availability with type_code="S" and classification="EB" to check coverage and the scheme each period was reported in.';
+
+/**
+ * The scheme catalogs listing a service code: `undefined` when they did not load, or did not
+ * answer before `deadlineAt` (the call's budget, shared with the data fetch). The first lookup
+ * loads three catalogs; later ones read the cache. Caller cancellation propagates.
+ */
+async function serviceCodeSchemes(
+  code: string,
+  signal: AbortSignal,
+  deadlineAt: number,
+): Promise<readonly EbScheme[] | undefined> {
+  // A timer rather than AbortSignal.timeout: it is cleared when the lookup settles.
+  const budget = new AbortController();
+  const timer = setTimeout(
+    () => budget.abort(new DOMException('The call budget ran out.', 'TimeoutError')),
+    Math.max(0, deadlineAt - Date.now()),
+  );
+  try {
+    // The whole listing, matched by equality: the code never reaches the keyword scan.
+    const listing = await getComtradeReferenceService().getServiceCategories(
+      undefined,
+      AbortSignal.any([signal, budget.signal]),
+    );
+    if (listing.status === 'untagged') return;
+    // codeSchema uppercases; EB.json keeps a few lowercase ids (3a.3.1).
+    return listing.categories.find((category) => category.id.toUpperCase() === code)?.schemes ?? [];
+  } catch (error) {
+    if (signal.aborted || !budget.signal.aborted) throw error;
+    return;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Why a services query returned no rows. A partner-only reporter code ends it with the
+ * reporter-valid code sharing its identity. Otherwise it explains a converted series, names the
+ * requested code's EB scheme, and routes to availability under EB, where each period shows the
+ * scheme it was reported in.
+ */
+async function emptyResultNotice(
+  input: { reporter_code: number; flow_code: string; service_code?: string | undefined },
+  classification: ServicesClassification,
+  servedPeriods: readonly string[],
+  signal: AbortSignal,
+  deadlineAt: number,
+): Promise<string> {
+  const sentences = [
+    `No services trade records found for reporter ${input.reporter_code}, flow=${input.flow_code}, periods=[${servedPeriods.join(', ')}].`,
+  ];
+  const partnerOnly = partnerOnlyReporterNotice(
+    input.reporter_code,
+    getComtradeReferenceService().getReporterStatus(input.reporter_code),
+  );
+  if (partnerOnly) return [...sentences, partnerOnly].join(' ');
+  if (classification !== 'EB')
+    sentences.push(
+      `${classification} serves UN Comtrade's conversions from other schemes; rows reported in ${classification} itself are served under classification "EB".`,
+    );
+  const code = input.service_code;
+  const schemes = code ? await serviceCodeSchemes(code, signal, deadlineAt) : [];
+  if (schemes === undefined) {
+    sentences.push(
+      `The EB scheme catalogs did not load, so service code ${code} is not matched to a scheme.`,
+    );
+  } else if (schemes.length > 0) {
+    const listed = `Service code ${code} belongs to ${schemes.join(' and ')}`;
+    sentences.push(
+      classification === 'EB'
+        ? `${listed}; EB serves each reporter-period in the scheme it was reported in, so a period reported in another scheme has no rows for this code.`
+        : `${listed}.`,
+    );
+  }
+  sentences.push(AVAILABILITY_ROUTE);
+  // EB10S has no converted series, so only EB10 and EB02 are levers.
+  const converted = schemes?.filter((scheme) => scheme !== 'EB10S') ?? [];
+  if (classification === 'EB' && converted.length > 0) {
+    sentences.push(
+      `Set classification to ${converted.map((scheme) => `"${scheme}"`).join(' or ')} for UN Comtrade's converted series.`,
+    );
+  }
+  return sentences.join(' ');
+}
 
 const ServicesFlowRecordSchema = z
   .object({
@@ -19,6 +117,12 @@ const ServicesFlowRecordSchema = z
       .string()
       .optional()
       .describe('Actual services classification edition on the returned row.'),
+    isOriginalClassification: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when the row is in the scheme the reporter used; false when UN Comtrade converted it into the requested classification.',
+      ),
     reporterCode: z.number().describe('M49 reporter code.'),
     reporterDesc: z.string().describe('Reporter country/area name.'),
     partnerCode: z.number().describe('M49 partner code.'),
@@ -35,11 +139,7 @@ const ServicesFlowRecordSchema = z
 export const getServicesTradeTool = tool('comtrade_get_services_trade', {
   title: 'Get Services Trade Data',
   description:
-    'Fetch annual international trade-in-services data through the combined EB classification; each row identifies its actual classification edition. ' +
-    'Same bilateral structure as goods trade: returns flow value in USD, period, and ' +
-    'reporter/partner/category metadata for each row. ' +
-    'Use comtrade_list_service_categories to find the right service code before querying. ' +
-    'Preview makes one paced request per served period, capped at 500 records per request. Services coverage is more limited than goods trade.',
+    "Fetch annual international trade-in-services data. Classification EB (default) serves each reporter-period as reported, in its own scheme (EB10, EB10S or EB02 codes); EB10 or EB02 selects UN Comtrade's conversion of other schemes into that one. Each row names its classification and whether it is original or converted. Same bilateral structure as goods trade: returns flow value in USD, period, and reporter/partner/category metadata for each row. Use comtrade_list_service_categories to find a service code and its scheme before querying. Keyless preview makes one request per served period, at least 4 seconds apart, capped at 500 records per request. Services coverage is more limited than goods trade.",
   annotations: { readOnlyHint: true, openWorldHint: true },
   errors: [
     {
@@ -64,6 +164,23 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       retryable: false,
       thrownBy: 'service',
     },
+    {
+      reason: 'rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'No served period completed and UN Comtrade rate-limited at least one through its retries.',
+      recovery: 'Wait the number of seconds the error states, then retry with fewer periods.',
+      retryable: true,
+      thrownBy: 'service',
+    },
+    {
+      reason: 'deadline_exceeded',
+      code: JsonRpcErrorCode.Timeout,
+      when: "No served period completed within the call's time budget.",
+      recovery:
+        'Retry with fewer periods per call, or retry later if UN Comtrade is responding slowly.',
+      retryable: true,
+      thrownBy: 'service',
+    },
   ],
 
   input: z.object({
@@ -74,7 +191,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       .min(1)
       .max(120)
       .describe(
-        'Annual periods YYYY. Serves the first 12 and discloses the remainder; input ceiling 120. Preview makes one paced request per period.',
+        'Annual periods YYYY. Serves the first 8 keyless (12 with authenticated access); the rest, and any period whose request is rate limited or runs out of time, are listed in unservedPeriods. Input ceiling 120.',
       ),
     partner_code: m49Schema
       .optional()
@@ -85,10 +202,11 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     service_code: codeSchema
       .optional()
       .describe(
-        'EB service category code (e.g. "SA" for manufacturing services or "3" for transport). ' +
-          'Use comtrade_list_service_categories to find available codes. ' +
-          'Omit to get totals across all service categories.',
+        'Service category code in one scheme: "7" (EB10), "SG" (EB10S) and "260" (EB02) are each financial services. Under EB a code returns rows only for periods reported in its scheme; comtrade_list_service_categories lists codes with their schemes. Omit to get every category the reporter reported, at mixed levels: totals (200 for EB10 and EB02, S for EB10S) beside their components, so do not sum the rows.',
       ),
+    classification: servicesClassificationSchema.describe(
+      "Services classification. EB (default): each reporter-period as reported, in its own scheme (EB10, EB10S or EB02 codes). EB10 or EB02: UN Comtrade's conversion of reports from other schemes into that one; reports made in it stay under EB. EB10S has no converted series; its rows are served only under EB. Case-insensitive; blank means EB.",
+    ),
   }),
 
   output: z.object({
@@ -116,8 +234,15 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     unservedPeriods: z
       .array(z.string())
       .optional()
-      .describe('Periods beyond the 12-period work cap; query them separately.'),
-    notice: z.string().optional().describe('Recovery hint when no records are returned.'),
+      .describe(
+        'Periods not served: past the period cap (8 keyless, 12 authenticated) or whose requests were rate limited or ran out of time; query them separately.',
+      ),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        "Why data is missing: periods that were rate limited (with the wait) or ran out of time, and, when no records are returned, the requested code's EB scheme or a partner-only reporter's counterpart, with the next call to make.",
+      ),
   },
 
   enrichmentTrailer: {
@@ -127,36 +252,54 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     },
   },
   async handler(input, ctx) {
+    // One budget for the data fetch and the empty-result scheme lookup.
+    const deadlineAt = Date.now() + TRADE_DATA_DEADLINE_MS;
+    const { classification } = input;
     ctx.log.info('comtrade_get_services_trade', {
       reporter: input.reporter_code,
       flow: input.flow_code,
+      classification,
       periods: input.period.length,
     });
 
     const svc = getComtradeDataService();
-    if (input.period.length > 12) ctx.enrich({ unservedPeriods: input.period.slice(12) });
+    const periodCap = svc.periodsPerCall(1);
+    const periods = input.period.slice(0, periodCap);
     const result = await svc.fetchTradeData(
       {
         reporterCode: input.reporter_code,
         flowCode: input.flow_code,
-        period: input.period.slice(0, 12).join(','),
+        period: periods.join(','),
         ...(input.partner_code !== undefined && { partnerCode: input.partner_code }),
         ...(input.service_code && { cmdCode: input.service_code }),
         typeCode: 'S',
-        classificationCode: 'EB',
+        classificationCode: classification,
         freqCode: 'A',
       },
       ctx.signal,
+      deadlineAt,
     );
     if (result.referenceNotice) ctx.enrich({ referenceNotice: result.referenceNotice });
+    const failed = new Set(result.failedPeriods?.map((failure) => failure.period));
+    const unservedPeriods = [
+      ...[...new Set(periods)].filter((period) => failed.has(period)),
+      ...input.period.slice(periodCap),
+    ];
+    if (unservedPeriods.length > 0) ctx.enrich({ unservedPeriods });
 
+    const notices = result.failedPeriods ? [describePeriodFailures(result.failedPeriods)] : [];
     if (result.records.length === 0) {
-      ctx.enrich.notice(
-        `No services trade records found for reporter ${input.reporter_code}, ` +
-          `flow=${input.flow_code}, periods=[${input.period.join(', ')}]. ` +
-          `Use comtrade_get_data_availability with type_code="S" to verify coverage.`,
+      notices.push(
+        await emptyResultNotice(
+          input,
+          classification,
+          periods.filter((period) => !failed.has(period)),
+          ctx.signal,
+          deadlineAt,
+        ),
       );
     }
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     return {
       records: result.records.map((record) => ServicesFlowRecordSchema.parse(record)),
@@ -182,6 +325,11 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       lines.push(`Service: ${r.cmdCode} — ${r.cmdDesc}`);
       if (r.classificationCode !== undefined)
         lines.push(`classificationCode: ${r.classificationCode}`);
+      if (r.isOriginalClassification != null) {
+        lines.push(
+          `Original classification: ${r.isOriginalClassification ? 'Yes (as reported)' : 'No (converted by UN Comtrade)'}`,
+        );
+      }
       if (r.primaryValue != null) {
         lines.push(`Value: $${r.primaryValue.toLocaleString()} USD`);
       }

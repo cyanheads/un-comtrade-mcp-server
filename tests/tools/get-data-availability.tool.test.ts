@@ -4,12 +4,17 @@
  */
 
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDataAvailabilityTool } from '@/mcp-server/tools/definitions/get-data-availability.tool.js';
 import {
   ComtradeMetaService,
   initComtradeMetaService,
 } from '@/services/comtrade-meta/comtrade-meta-service.js';
+import {
+  ComtradeReferenceService,
+  initComtradeReferenceService,
+} from '@/services/comtrade-reference/comtrade-reference-service.js';
+import type { ReporterStatus } from '@/services/comtrade-reference/types.js';
 
 const mockConfig = {} as Parameters<typeof initComtradeMetaService>[0];
 const mockStorage = {} as Parameters<typeof initComtradeMetaService>[1];
@@ -31,6 +36,8 @@ describe('getDataAvailabilityTool', () => {
 
   beforeEach(() => {
     initComtradeMetaService(mockConfig, mockStorage);
+    // An unloaded index classifies every code as unknown, leaving the generic notice in place.
+    initComtradeReferenceService(mockConfig, mockStorage);
     availMock = vi
       .spyOn(ComtradeMetaService.prototype, 'getDataAvailability')
       .mockResolvedValue([AVAILABILITY_RECORD]);
@@ -208,6 +215,18 @@ describe('getDataAvailabilityTool', () => {
     expect(getEnrichment(ctx).notice).toContain('999');
   });
 
+  it('names reporter 0 in the empty notice on both surfaces', async () => {
+    availMock.mockResolvedValue([]);
+    const run = await runToolContract(getDataAvailabilityTool, {
+      reporter_code: 0,
+      period: '2022',
+    });
+    const notice =
+      'No data availability records found for reporter 0, period 2022. Try a different reporter, period, or classification.';
+    expect(run.structuredContent).toMatchObject({ datasets: [], notice });
+    expect(JSON.stringify(run.content)).toContain(notice);
+  });
+
   it('omits optional fields when absent in upstream response', async () => {
     availMock.mockResolvedValue([
       {
@@ -248,5 +267,96 @@ describe('getDataAvailabilityTool', () => {
     expect(text).toContain('250,000');
     expect(text).toContain('2023-03-15');
     expect(text).toContain('2024-05-20');
+  });
+});
+
+describe('getDataAvailabilityTool partner-only reporters', () => {
+  const statuses = new Map<number, ReporterStatus>([
+    [
+      250,
+      { referenceStatus: 'partner_only', name: 'Metropolitan France', suggestedReporterCode: 251 },
+    ],
+    [0, { referenceStatus: 'partner_only', name: 'World' }],
+  ]);
+  beforeEach(() => {
+    initComtradeMetaService(mockConfig, mockStorage);
+    initComtradeReferenceService(mockConfig, mockStorage);
+    vi.spyOn(ComtradeReferenceService.prototype, 'getReporterStatus').mockImplementation(
+      (code) => statuses.get(code) ?? { referenceStatus: 'unknown' },
+    );
+    vi.spyOn(ComtradeMetaService.prototype, 'getDataAvailability').mockResolvedValue([]);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    [
+      250,
+      'No data availability records found for reporter 250, period 2022. Reporter 250 (Metropolitan France) is a partner-only code in UN Comtrade reference data; reporter 251 shares its ISO-3 identity. Retry with reporter_code 251.',
+    ],
+    [
+      0,
+      'No data availability records found for reporter 0, period 2022. Reporter 0 (World) is a partner-only code in UN Comtrade reference data and has no reporter-valid counterpart. Find a reporter with comtrade_lookup_countries using role "reporter".',
+    ],
+  ])(
+    'names partner-only reporter %s and its counterpart on both surfaces',
+    async (code, notice) => {
+      const run = await runToolContract(getDataAvailabilityTool, {
+        reporter_code: code,
+        period: '2022',
+      });
+      expect(run.structuredContent).toMatchObject({ datasets: [], totalDatasets: 0, notice });
+      expect(
+        (run.content ?? []).map((block) => (block as { text: string }).text).join('\n'),
+      ).toContain(`> ${notice}`);
+    },
+  );
+
+  it('keeps availability rows for a partner-only code without a notice', async () => {
+    vi.mocked(ComtradeMetaService.prototype.getDataAvailability).mockResolvedValue([
+      { ...AVAILABILITY_RECORD, reporterCode: 250, reporterDesc: 'France' },
+    ]);
+    const run = await runToolContract(getDataAvailabilityTool, { reporter_code: 250 });
+    expect(run.structuredContent).toMatchObject({ datasets: [{ reporterCode: 250 }] });
+    expect(run.structuredContent).not.toHaveProperty('notice');
+  });
+});
+
+describe('getDataAvailabilityTool frequency on the availability endpoint', () => {
+  let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
+  beforeEach(() => {
+    initComtradeMetaService(mockConfig, mockStorage);
+    initComtradeReferenceService(mockConfig, mockStorage);
+    fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname !== 'comtradeapi.un.org') throw new Error(`Unexpected fetch ${url.href}`);
+      return Response.json({ data: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    [{ reporter_code: 842, period: '202401' }, '/public/v1/getDA/C/M/HS'],
+    [{ reporter_code: 842, period: '2022' }, '/public/v1/getDA/C/A/HS'],
+    [{ reporter_code: 842 }, '/public/v1/getDA/C/A/HS'],
+    [{ reporter_code: 842, freq: 'M' }, '/public/v1/getDA/C/M/HS'],
+  ])('requests %j at %s', async (args, pathname) => {
+    const run = await runToolContract(getDataAvailabilityTool, args);
+    expect(run.isError).not.toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe(pathname);
+    expect(url.searchParams.get('period')).toBe(args.period ?? null);
+  });
+
+  it('rejects an explicit frequency that disagrees with the period before any request', async () => {
+    const run = await runToolContract(getDataAvailabilityTool, {
+      reporter_code: 842,
+      period: '202401',
+      freq: 'A',
+    });
+    expect(run.isError).toBe(true);
+    expect(run.structuredContent).toMatchObject({ error: { code: -32602 } });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

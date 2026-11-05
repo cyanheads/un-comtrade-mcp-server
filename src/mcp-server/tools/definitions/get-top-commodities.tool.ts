@@ -5,10 +5,16 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { flowSchema, periodSchema } from '@/mcp-server/tools/comtrade-input.js';
+import {
+  flowSchema,
+  m49Schema,
+  periodFrequency,
+  periodSchema,
+} from '@/mcp-server/tools/comtrade-input.js';
+import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
-import { retrieveCommodityRanking } from './commodity-ranking.js';
+import { retrieveCommodityRanking, singlePeriodFailure } from './commodity-ranking.js';
 
 export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
   title: 'Get Top Trade Commodities',
@@ -45,28 +51,44 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       recovery: 'Supply one reporter code for the commodity ranking query.',
       thrownBy: 'service',
     },
+    {
+      reason: 'rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'With TOTAL or the HS reference unavailable, UN Comtrade rate-limited the aggregate fallback through its retries.',
+      recovery: 'Wait the number of seconds the error states, then retry the ranking.',
+      retryable: true,
+      thrownBy: 'service',
+    },
+    {
+      reason: 'deadline_exceeded',
+      code: JsonRpcErrorCode.Timeout,
+      when: "With TOTAL or the HS reference unavailable, the aggregate fallback did not complete within the call's time budget.",
+      recovery: 'Retry the ranking in a few seconds; it did not finish within its time budget.',
+      retryable: true,
+      thrownBy: 'service',
+    },
   ],
 
   input: z.object({
-    reporter_code: z.number().int().describe('M49 numeric code of the reporting country.'),
+    reporter_code: m49Schema.describe('M49 numeric code of the reporting country (0–999).'),
     flow_code: flowSchema.describe('Trade flow: M=imports, X=exports.'),
     period: periodSchema.describe('Single period: annual (YYYY) or monthly (YYYYMM, month 01–12).'),
     aggr_level: z
       .union([z.literal(2), z.literal(4)])
       .default(2)
       .describe('HS aggregation level: 2 = chapter (broader), 4 = heading (more specific).'),
-    partner_code: z
-      .number()
-      .int()
+    partner_code: m49Schema
       .optional()
-      .describe('M49 partner code for a bilateral relationship; omit for World aggregate (0).'),
+      .describe(
+        'M49 partner code (0–999) for a bilateral relationship; omit for World aggregate (0).',
+      ),
     limit: z
       .number()
       .int()
       .min(1)
       .default(10)
       .describe(
-        'Maximum number of top commodity categories to return; above 50 returns all retrieved categories.',
+        'Number of top commodity categories to return; totalCommodities counts every category retrieved.',
       ),
   }),
 
@@ -118,7 +140,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     missingCodes: z
       .array(z.string())
       .describe(
-        'Codes whose retrieval failed or remained capped; empty when the code universe is unavailable.',
+        "Codes whose retrieval failed, remained capped, or did not fit the call's time budget; empty when the code universe is unavailable.",
       ),
     classificationCode: z.string().optional().describe('HS edition identified by matching TOTAL.'),
     denominatorValueUsd: z
@@ -141,33 +163,35 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       aggr_level: input.aggr_level,
     });
 
-    const svc = getComtradeDataService();
-
+    const reference = getComtradeReferenceService();
     const result = await retrieveCommodityRanking(
-      svc,
-      getComtradeReferenceService(),
+      getComtradeDataService(),
+      reference,
       {
         reporterCode: input.reporter_code,
         flowCode: input.flow_code,
         period: input.period,
         partnerCode: input.partner_code ?? 0,
         classificationCode: 'HS',
-        freqCode: input.period.length === 6 ? 'M' : 'A',
+        freqCode: periodFrequency(input.period),
       },
       input.aggr_level,
       ctx.signal,
-    );
+    ).catch((error: unknown) => {
+      throw singlePeriodFailure(error);
+    });
 
     if (result.records.length === 0) {
+      const status = reference.getReporterStatus(input.reporter_code);
+      const partnerOnly = partnerOnlyReporterNotice(input.reporter_code, status);
       ctx.enrich.notice(
-        `No commodity data found for reporter ${input.reporter_code}, ` +
-          `flow=${input.flow_code}, period=${input.period}. ` +
-          `Use comtrade_get_data_availability to verify data exists.`,
+        `No commodity data found for reporter ${input.reporter_code}, flow=${input.flow_code}, period=${input.period}. ${partnerOnly ?? 'Use comtrade_get_data_availability to verify data exists.'}`,
       );
       return {
         commodities: [],
         reporterCode: input.reporter_code,
-        reporterDesc: String(input.reporter_code),
+        reporterDesc:
+          status.referenceStatus === 'unknown' ? String(input.reporter_code) : status.name,
         period: input.period,
         flowCode: input.flow_code,
         aggrLevel: input.aggr_level,
@@ -189,7 +213,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     const totalValueUsd = sorted.reduce((sum, r) => sum + (r.primaryValue ?? 0), 0);
     const totalCommodities = sorted.length;
     const valuesKnown = sorted.every((row) => row.primaryValue != null);
-    const sliced = input.limit > 50 ? sorted : sorted.slice(0, input.limit);
+    const sliced = sorted.slice(0, input.limit);
 
     return {
       commodities: sliced.map((r, i) => ({

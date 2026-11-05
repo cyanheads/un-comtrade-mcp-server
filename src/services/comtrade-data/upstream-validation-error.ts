@@ -41,11 +41,12 @@ export function upstreamValidationError(error: unknown): unknown {
     for (const detail of value.details ?? []) {
       for (const field of detail.memberNames) {
         if (allowedFields.has(field) && detail.errorMessage === `The field ${field} is invalid`)
-          details.push(detail.errorMessage);
+          details.push(`${detail.errorMessage}.`);
       }
     }
   }
-  const explanation = [...new Set(details)].join('. ');
+  // Each relayed detail is one sentence ending in exactly one period.
+  const explanation = [...new Set(details)].join(' ');
   return new McpError(
     JsonRpcErrorCode.InvalidParams,
     `UN Comtrade rejected the request.${explanation ? ` ${explanation}` : ''} Verify reporter, period, classification and commodity filters.`,

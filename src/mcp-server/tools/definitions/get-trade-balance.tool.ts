@@ -8,19 +8,29 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
   codeSchema,
   frequencySchema,
+  GOODS_CODE_SHAPE_MESSAGE,
   goodsClassificationSchema,
   goodsCodesMatchClassification,
   m49Schema,
   periodSchema,
   periodsMatchFrequency,
+  resolveFrequency,
 } from '@/mcp-server/tools/comtrade-input.js';
-import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
+import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
+import {
+  describePeriodFailures,
+  getComtradeDataService,
+  periodFailureError,
+  TRADE_DATA_DEADLINE_MS,
+  type TradeQueryResult,
+} from '@/services/comtrade-data/comtrade-data-service.js';
+import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
   title: 'Get Trade Balance',
   description:
     'Compute the trade balance for a country over one or more periods — total exports minus ' +
-    'total imports — with optional HS or SITC commodity filter. Preview makes two paced requests per served period; authenticated calls batch periods. ' +
+    'total imports — with optional HS or SITC commodity filter. Keyless preview makes two requests per served period, at least 4 seconds apart; authenticated calls batch periods. ' +
     'Returns the signed balance (USD), export value, import value, and coverage ratio ' +
     '(exports / imports). Note: mirror asymmetry is common — balance reflects values as ' +
     'reported by this country; the same flow may be recorded differently by the partner. ' +
@@ -29,7 +39,9 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
 
   input: z
     .object({
-      reporter_code: m49Schema.describe('M49 numeric code of the reporting country (0–999).'),
+      reporter_code: m49Schema.describe(
+        'M49 numeric code of the reporting country (0–999). A partner-only code (0 World, 250 Metropolitan France) with no data fails with partner_only_reporter, naming the reporter-valid code when one exists (250 → 251).',
+      ),
       partner_code: m49Schema
         .default(0)
         .describe(
@@ -40,7 +52,7 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
         .min(1)
         .max(120)
         .describe(
-          'Annual periods (YYYY) or monthly periods (YYYYMM). Serves the first 12 and discloses the remainder; input ceiling 120.',
+          'Periods, all annual (YYYY) or all monthly (YYYYMM); mixed lengths are rejected. Serves the first 4 keyless (12 with authenticated access); the rest, and any period whose export or import request is rate limited or runs out of time, are listed in unservedPeriods. Input ceiling 120.',
         ),
       cmd_code: z
         .array(codeSchema)
@@ -54,17 +66,19 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
         .default('HS')
         .describe('Goods classification: HS/H0–H6 or SITC S1–S4/SS.'),
       freq: frequencySchema
-        .default('A')
-        .describe('Frequency: A=annual YYYY, M=monthly YYYYMM (01–12).'),
+        .optional()
+        .describe(
+          'Frequency for both flows: A=annual YYYY, M=monthly YYYYMM (01–12). Omit to infer it from the periods; an explicit value must match them.',
+        ),
     })
     .refine(periodsMatchFrequency, {
       path: ['period'],
-      message: 'Use YYYY for annual frequency or YYYYMM for monthly frequency.',
+      message:
+        'Use only YYYY (annual) or only YYYYMM (monthly) periods in one call; an explicit freq must match them.',
     })
     .refine(goodsCodesMatchClassification, {
       path: ['cmd_code'],
-      message:
-        'Use HS codes with 2, 4 or 6 digits or legacy 9999AA; SITC codes have up to 5 characters with optional trailing X. TOTAL and classification-specific AG selectors are supported.',
+      message: GOODS_CODE_SHAPE_MESSAGE,
     }),
 
   output: z.object({
@@ -123,7 +137,9 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
     notice: z
       .string()
       .optional()
-      .describe('Possible incompleteness of the balance when a preview response reaches its cap.'),
+      .describe(
+        'Periods left out because a flow was rate limited (with the wait) or ran out of time, and possible incompleteness when a preview response reaches its cap.',
+      ),
     referenceNotice: z
       .string()
       .optional()
@@ -131,7 +147,9 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
     unservedPeriods: z
       .array(z.string())
       .optional()
-      .describe('Periods beyond the 12-period work cap; query them separately.'),
+      .describe(
+        'Periods not served: past the period cap (4 keyless, 12 authenticated) or whose export or import request was rate limited or ran out of time; query them separately.',
+      ),
     unservedCmdCodes: z
       .array(z.string())
       .optional()
@@ -176,6 +194,29 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
         'Use comtrade_get_data_availability to verify which periods have published data, ' +
         'then retry with a confirmed available period.',
     },
+    {
+      reason: 'partner_only_reporter',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'No served period has data and the reporter code is partner-only in UN Comtrade reference data.',
+      recovery: 'Find a reporter with comtrade_lookup_countries using role "reporter".',
+    },
+    {
+      reason: 'rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'No period was served and UN Comtrade rate-limited a flow through its retries.',
+      recovery: 'Wait the number of seconds the error states, then retry with fewer periods.',
+      retryable: true,
+      thrownBy: 'service',
+    },
+    {
+      reason: 'deadline_exceeded',
+      code: JsonRpcErrorCode.Timeout,
+      when: "No period had both flows complete within the call's time budget.",
+      recovery:
+        'Retry with fewer periods per call, or retry later if UN Comtrade is responding slowly.',
+      retryable: true,
+      thrownBy: 'service',
+    },
   ],
 
   enrichmentTrailer: {
@@ -195,10 +236,10 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
     });
 
     const svc = getComtradeDataService();
-    const servedPeriods = input.period.slice(0, 12);
+    const periodCap = svc.periodsPerCall(2);
+    const servedPeriods = input.period.slice(0, periodCap);
     const normalizedCodes = input.cmd_code?.filter(Boolean);
     const codes = normalizedCodes?.slice(0, 20);
-    if (input.period.length > 12) ctx.enrich({ unservedPeriods: input.period.slice(12) });
     if (normalizedCodes && normalizedCodes.length > 20)
       ctx.enrich({ unservedCmdCodes: normalizedCodes.slice(20) });
     const periodStr = servedPeriods.join(',');
@@ -210,18 +251,42 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       cmdCode,
       classificationCode: input.classification,
       typeCode: 'C' as const,
-      freqCode: input.freq,
+      freqCode: resolveFrequency(input),
     };
 
-    const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(55_000)]);
-    const [exportResult, importResult] = await Promise.all([
-      svc.fetchTradeData({ ...commonParams, flowCode: 'X' }, signal),
-      svc.fetchTradeData({ ...commonParams, flowCode: 'M' }, signal),
+    // Both flows share one deadline; the first to fail stops the other before the call settles,
+    // so no preview request starts after it returns.
+    const deadlineAt = Date.now() + TRADE_DATA_DEADLINE_MS;
+    const stop = new AbortController();
+    const signal = AbortSignal.any([ctx.signal, stop.signal]);
+    const fetchFlow = (flowCode: 'X' | 'M'): Promise<TradeQueryResult> =>
+      svc.fetchTradeData({ ...commonParams, flowCode }, signal, deadlineAt).catch((error) => {
+        stop.abort(error);
+        throw error;
+      });
+    const [exportOutcome, importOutcome] = await Promise.allSettled([
+      fetchFlow('X'),
+      fetchFlow('M'),
     ]);
+    if (exportOutcome.status === 'rejected' || importOutcome.status === 'rejected')
+      throw stop.signal.reason;
+    const exportResult = exportOutcome.value;
+    const importResult = importOutcome.value;
+
+    // A period counts only when both flows completed it.
+    const failures = [...(exportResult.failedPeriods ?? []), ...(importResult.failedPeriods ?? [])];
+    const failed = new Set(failures.map((failure) => failure.period));
+    const unservedPeriods = [
+      ...[...new Set(servedPeriods)].filter((period) => failed.has(period)),
+      ...input.period.slice(periodCap),
+    ];
+    if (unservedPeriods.length > 0) ctx.enrich({ unservedPeriods });
+    const notices = failures.length > 0 ? [describePeriodFailures(failures)] : [];
     if (exportResult.truncated || importResult.truncated)
-      ctx.enrich.notice(
+      notices.push(
         'A preview response reached 500 records; balance values may be incomplete. Narrow the commodity query.',
       );
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
     const referenceNotice = [
       ...new Set([exportResult.referenceNotice, importResult.referenceNotice].filter(Boolean)),
     ].join(' ');
@@ -237,15 +302,17 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
     const periodMap = new Map<string, { exportsUsd?: number; importsUsd?: number }>();
 
     for (const p of servedPeriods) {
-      periodMap.set(p, {});
+      if (!failed.has(p)) periodMap.set(p, {});
     }
 
     for (const r of exportResult.records) {
+      if (failed.has(r.period)) continue;
       const entry = periodMap.get(r.period) ?? {};
       entry.exportsUsd = (entry.exportsUsd ?? 0) + (r.primaryValue ?? 0);
       periodMap.set(r.period, entry);
     }
     for (const r of importResult.records) {
+      if (failed.has(r.period)) continue;
       const entry = periodMap.get(r.period) ?? {};
       entry.importsUsd = (entry.importsUsd ?? 0) + (r.primaryValue ?? 0);
       periodMap.set(r.period, entry);
@@ -280,6 +347,30 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
     });
 
     if (periods.every((p) => p.exportsUsd === undefined && p.importsUsd === undefined)) {
+      // An answered-empty period is not "no data" for the periods that failed.
+      if (failures.length > 0)
+        throw periodFailureError(
+          failures,
+          periods.length > 0
+            ? {
+                lead: `Served period${periods.length === 1 ? '' : 's'} ${periods.map((p) => p.period).join(', ')} returned no trade data.`,
+              }
+            : {},
+        );
+      const status = getComtradeReferenceService().getReporterStatus(input.reporter_code);
+      if (status.referenceStatus === 'partner_only') {
+        const suggested = status.suggestedReporterCode;
+        throw ctx.fail(
+          'partner_only_reporter',
+          `No trade data found for reporter ${input.reporter_code}, periods [${servedPeriods.join(', ')}]. ${partnerOnlyReporterNotice(input.reporter_code, status)}`,
+          suggested === undefined
+            ? undefined
+            : {
+                suggestedReporterCode: suggested,
+                recovery: { hint: `Retry with reporter_code ${suggested}.` },
+              },
+        );
+      }
       const truncated = exportResult.truncated || importResult.truncated;
       throw ctx.fail(
         'no_data',
