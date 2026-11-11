@@ -694,8 +694,9 @@ describe('ComtradeReferenceService', () => {
   });
 
   it.each([
-    ['Germany', 'any', [276, 278, 280]],
-    ['Germany', 'reporter', [276, 278, 280]],
+    // The exact name ranks first and pulls in 280, which shares its ISO-3 code, at its rank.
+    ['Germany', 'any', [276, 280, 278]],
+    ['Germany', 'reporter', [276, 280, 278]],
     ['vietnam', 'any', [704, 866, 868]],
     // Exact ISO-2 first; "de" also matches the "Dem. Rep." names.
     ['DE', 'any', [276, 280, 278, 866]],
@@ -747,7 +748,12 @@ describe('ComtradeReferenceService', () => {
   it.each([
     [
       250,
-      { referenceStatus: 'partner_only', name: 'Metropolitan France', suggestedReporterCode: 251 },
+      {
+        referenceStatus: 'partner_only',
+        name: 'Metropolitan France',
+        suggestedReporterCode: 251,
+        suggestionBasis: 'iso3',
+      },
     ],
     [
       578,
@@ -755,15 +761,25 @@ describe('ComtradeReferenceService', () => {
         referenceStatus: 'partner_only',
         name: 'Norway, excluding Svalbard and Jan Mayen',
         suggestedReporterCode: 579,
+        suggestionBasis: 'iso3',
       },
     ],
-    [756, { referenceStatus: 'partner_only', name: 'Switzerland', suggestedReporterCode: 757 }],
+    [
+      756,
+      {
+        referenceStatus: 'partner_only',
+        name: 'Switzerland',
+        suggestedReporterCode: 757,
+        suggestionBasis: 'iso3',
+      },
+    ],
     [
       840,
       {
         referenceStatus: 'partner_only',
         name: 'United States of America',
         suggestedReporterCode: 842,
+        suggestionBasis: 'iso3',
       },
     ],
     [0, { referenceStatus: 'partner_only', name: 'World' }],
@@ -799,6 +815,7 @@ describe('ComtradeReferenceService', () => {
       referenceStatus: 'partner_only',
       name: 'United States of America',
       suggestedReporterCode: 842,
+      suggestionBasis: 'iso3',
     });
     for (const query of ['US', 'USA', 'United States']) {
       const result = await runToolContract(lookupCountriesTool, { query });
@@ -934,6 +951,378 @@ describe('ComtradeReferenceService', () => {
     await rejected;
     await expect(ref.getServiceCategories('financial', controller.signal)).rejects.toThrow();
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+/** Selected HS.json rows after TOTAL, in catalog order; spellings are upstream's. */
+const RANKED_HS_TEXTS = [
+  '0306 - Crustaceans; in shell or not, live, fresh, chilled, frozen, dried, salted or in brine; smoked, cooked or not before or during smoking; in shell, steamed or boiled, whether or not chilled, frozen, dried, salted or in brine',
+  "0408 - Birds' eggs, not in shell; egg yolks, fresh, dried, cooked by steaming or boiling in water, moulded, frozen or otherwise preserved, whether or not containing added sugar or other sweetening matter",
+  '0710 - Vegetables (uncooked or cooked by steaming or boiling in water); frozen',
+  '0811 - Fruit and nuts; uncooked or cooked by steaming or boiling in water, frozen, whether or not containing added sugar or other sweetening matter',
+  '09 - Coffee, tea, mate and spices',
+  '0901 - Coffee, whether or not roasted or decaffeinated; husks and skins; coffee substitutes containing coffee in any proportion',
+  '090111 - Coffee; not roasted or decaffeinated',
+  '090112 - Coffee; decaffeinated, not roasted',
+  '090121 - Coffee; roasted, not decaffeinated',
+  '090122 - Coffee; roasted, decaffeinated',
+  '090130 - Coffee husks and skins',
+  '090140 - Coffee substitutes containing coffee',
+  '090190 - Coffee; husks and skins, coffee substitutes containing coffee in any proportion',
+  '0902 - Tea',
+  '1503 - Lard stearin, lard oil, oleostearin, oleo-oil and tallow oil; not emulsified or mixed or otherwise prepared',
+  '2101 - Extracts, essences, concentrates of coffee, tea or mate; preparations with a basis of these products or with a basis of coffee, tea or mate; roasted chicory and other roasted coffee substitutes and extracts, essences and concentrates thereof',
+  '2526 - Natural steatite; whether or not roughly trimmed or merely cut, by sawing or otherwise, into blocks or slabs of a rectangular (including square) shape; talc',
+  '4014 - Hygienic or pharmaceutical articles (including teats), of vulcanised rubber other than hard rubber, with or without fittings of hard rubber',
+  '6501 - Hat-forms, hat bodies and hoods of felt, neither blocked to shape nor with made brims; plateaux and manchons (including slit manchons) of felt',
+  '6503 - Felt hats and other felt headgear, made from the hat bodies, hoods or plateaux of heading 65.01, whether or not lined or trimmed.',
+  '8402 - Boilers; steam or other vapour generating (other than central heating hot water boilers, capable also of producing low pressure steam), super heated water boilers',
+  '8404 - Auxiliary plant for use with boilers of heading no. 8402 or 8403; e.g. economisers, super-heaters, soot removers, gas recoverers), condensers for steam or other vapour power units',
+  '8406 - Turbines; steam and other vapour turbines',
+  '8424 - Mechanical appliances for projecting, dispersing or spraying liquids or powders; fire extinguishers, spray guns, steam, sand blasting machines',
+  '8471 - Automatic data processing machines and units thereof, magnetic or optical readers, machines for transcribing data onto data media in coded form and machines for processing such data, not elsewhere specified or included',
+  '847130 - Automatic data processing machines; portable, weighing not more than 10kg, consisting of at least a central processing unit, a keyboard and a display',
+  '847141 - Automatic data processing machines; comprising in the same housing at least a central processing unit and an input and output unit, whether or not combined, n.e.c. in item no. 8471.30',
+  '847149 - Automatic data processing machines; presented in the form of systems, n.e.c. in item no. 8471.30 or 8471.41',
+  '9602 - Vegetable, mineral carving material and articles of these materials, moulded or carved articles of wax, stearin, natural gums, resins or modelling pastes, worked unhardened gelatin (not heading no. 3503)',
+];
+
+/** Selected S4.json rows in catalog order; SITC codes carry trailing X but never a separator. */
+const RANKED_S4_TEXTS = [
+  '00 - Live animals other than animals of division 03',
+  '001 - Live animals other than animals of division 03',
+  '001X - Memorandum Item',
+  '001XX - Memorandum Item',
+  '07 - Coffee, tea, cocoa, spices, and manufactures thereof',
+  '071 - Coffee and coffee substitutes',
+  '0711 - Coffee, not roasted, whether or not decaffeinated',
+  '07111 - Coffee, not roasted, not decaffeinated',
+  '07112 - Coffee, not roasted, decaffeinated',
+  '0711X - Memorandum Item',
+];
+
+/** Selected EB.json rows in catalog order: dotted, mixed-case codes. */
+const RANKED_EB_ROWS = [
+  { id: '200', text: 'Total EBOPS 2002/2010 Services', parent: '#' },
+  { id: 'S', text: 'Total EBOPS 2010 SDMX Services', parent: '#' },
+  { id: '215', text: '1.3.1 Passenger', parent: '214' },
+  { id: '246', text: '3.1 Postal and courier services', parent: '245' },
+  { id: '310', text: 'Compensation of employees', parent: '900' },
+  { id: '894', text: '8. Audiovisual transactions', parent: '999' },
+  {
+    id: '950',
+    text: '1. Freight transportation on merchandise, valued on a transaction basis',
+    parent: '999',
+  },
+  {
+    id: '10.1.1.2',
+    text: '10.1.1.2 Sale of proprietary rights arising from research and development',
+    parent: '10.1.1',
+  },
+  { id: '3', text: '3 Transport', parent: 'TOTAL' },
+  { id: '3.1', text: '3.1 Sea transport', parent: '3' },
+  { id: '3.1.1', text: '3.1.1 Passenger', parent: '3.1' },
+  {
+    id: '3.1.1.a',
+    text: '3.1.1.a Of which: Payable by border, seasonal, and other short-term workers',
+    parent: '3.1.1',
+  },
+  { id: '3.1.2', text: '3.1.2 Freight', parent: '3.1' },
+  { id: 'C.1', text: 'C.1 Audio-visual transactions', parent: 'TOTAL' },
+  { id: 'SA', text: 'Manufacturing services on physical inputs owned by', parent: 'S' },
+  { id: 'Say', text: 'Goods for processing in reporting economy — Goods ', parent: 'SA' },
+  { id: 'Saz', text: 'Goods for processing abroad — Goods sent (credits)', parent: 'SA' },
+];
+
+/** Catalog rows from `<code> - <description>` texts; levels come from the code. */
+function codedRows(texts: readonly string[]): { id: string; text: string }[] {
+  return texts.map((text) => ({ id: text.slice(0, text.indexOf(' - ')), text }));
+}
+
+/** The match rule before ranking: code prefix (HS ids as given) or description substring. */
+function substringMatches(
+  rows: readonly { id: string; text: string }[],
+  query: string,
+  lowercaseIds: boolean,
+): string[] {
+  const q = query.toLowerCase();
+  return rows
+    .filter(
+      (row) =>
+        (lowercaseIds ? row.id.toLowerCase() : row.id).startsWith(q) ||
+        row.text.toLowerCase().includes(q),
+    )
+    .map((row) => row.id);
+}
+
+/** Least thread CPU time, in microseconds per call, over several trials of `reps` calls. */
+function cpuMicrosPerCall(run: () => unknown, reps: number): number {
+  let least = Number.POSITIVE_INFINITY;
+  for (let trial = 0; trial < 3; trial++) {
+    const start = process.threadCpuUsage();
+    for (let i = 0; i < reps; i++) run();
+    const used = process.threadCpuUsage(start);
+    least = Math.min(least, (used.user + used.system) / reps);
+  }
+  return least;
+}
+
+/**
+ * Asserts `callAt(size)` grows at most linearly from `base` to 64× by doubling: at each size the
+ * least cost ratio over up to three pairs, each re-timing the baseline beside it, stays under four
+ * times the size ratio (256 over the full span, where quadratic growth reaches 4096). Pairing
+ * stops once the least ratio is under the bound, since another pair can only lower it.
+ */
+function expectLinearGrowth(
+  callAt: (size: number) => () => unknown,
+  base: number,
+  baseReps: number,
+): void {
+  const baseline = callAt(base);
+  for (let size = base * 2; size <= base * 64; size *= 2) {
+    const call = callAt(size);
+    const reps = Math.max(1, Math.round((baseReps * base) / size));
+    const bound = 4 * (size / base);
+    let least = Number.POSITIVE_INFINITY;
+    for (let pair = 0; pair < 3 && least >= bound; pair++) {
+      const small = cpuMicrosPerCall(baseline, baseReps);
+      least = Math.min(least, cpuMicrosPerCall(call, reps) / small);
+    }
+    expect(least, `cost ratio at ${size} against ${base}`).toBeLessThan(bound);
+  }
+}
+
+describe('catalog search ranking', () => {
+  const hsRows = [
+    { id: 'TOTAL', text: 'Total - All H6 commodities', aggrLevel: 0 },
+    ...codedRows(RANKED_HS_TEXTS),
+  ];
+  const s4Rows = codedRows(RANKED_S4_TEXTS);
+  let ref: ReferenceService;
+  beforeEach(async () => {
+    stubFetch({
+      'HS.json': { results: hsRows },
+      'S4.json': { results: s4Rows },
+      'EB.json': { results: RANKED_EB_ROWS },
+    });
+    ref = initComtradeReferenceService(config, storage);
+    await ref.initialize();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const ids = (entries: readonly { id: string }[]) => entries.map((entry) => entry.id);
+
+  it('keeps the match set and count of every separator-free query', async () => {
+    const hsQueries = ['tea', 'TEA', 'coffee', 'oil', 'steam', 'a', '09', '0901', '8471', 'total'];
+    for (const query of hsQueries) {
+      const hs = ids(ref.searchHsCodes(query));
+      expect(hs, query).toHaveLength(substringMatches(hsRows, query, false).length);
+      expect(new Set(hs), query).toEqual(new Set(substringMatches(hsRows, query, false)));
+    }
+    for (const query of ['coffee', '001X', '0711', 'memorandum', '07']) {
+      const s4 = ids(await ref.searchCommodityCodes(query, 'S4'));
+      expect(new Set(s4), query).toEqual(new Set(substringMatches(s4Rows, query, true)));
+      expect(s4, query).toHaveLength(substringMatches(s4Rows, query, true).length);
+    }
+    for (const query of ['SA', 'sa', '3', '3.1', 'transport', 'passenger', '31']) {
+      const eb = ids(ref.searchEbopsCategories(query));
+      expect(new Set(eb), query).toEqual(new Set(substringMatches(RANKED_EB_ROWS, query, true)));
+      expect(eb, query).toHaveLength(substringMatches(RANKED_EB_ROWS, query, true).length);
+    }
+  });
+
+  it.each(['0901.11', '0901 11', '0901-11', '09-01-11'])(
+    'compares the HS code in %s without its separators',
+    (query) => {
+      expect(ids(ref.searchHsCodes(query))).toEqual(['090111']);
+    },
+  );
+
+  it.each(['09.01', '0901.', '.0901'])(
+    'finds HS heading 0901 first and its seven subheadings for %s',
+    (query) => {
+      expect(ids(ref.searchHsCodes(query))).toEqual([
+        '0901',
+        '090111',
+        '090112',
+        '090121',
+        '090122',
+        '090130',
+        '090140',
+        '090190',
+      ]);
+    },
+  );
+
+  it('ranks the exact code of "8471.30" before the codes whose descriptions cite it', () => {
+    expect(ids(ref.searchHsCodes('8471.30'))).toEqual(['847130', '847141', '847149']);
+  });
+
+  it('strips separators in SITC codes and keeps a letter-bearing SITC code as typed', async () => {
+    expect(ids(await ref.searchCommodityCodes('071.1', 'S4'))).toEqual([
+      '0711',
+      '07111',
+      '07112',
+      '0711X',
+    ]);
+    expect(ids(await ref.searchCommodityCodes('001X', 'S4'))).toEqual(['001X', '001XX']);
+    expect(ids(await ref.searchCommodityCodes('0 7 1 1', 'S4', 5))).toEqual([
+      '07111',
+      '07112',
+      '0711X',
+    ]);
+  });
+
+  it('puts whole-word "tea" headings first and keeps the 16 level-4 matches', async () => {
+    const tea = ids(await ref.searchCommodityCodes('tea', 'HS', 4));
+    expect(tea).toEqual([
+      '0902',
+      '2101',
+      '0306',
+      '0408',
+      '0710',
+      '0811',
+      '1503',
+      '2526',
+      '4014',
+      '6501',
+      '6503',
+      '8402',
+      '8404',
+      '8406',
+      '8424',
+      '9602',
+    ]);
+    expect(ids(ref.searchHsCodes('tea')).slice(0, 3)).toEqual(['09', '0902', '2101']);
+  });
+
+  it('compares HS codes case-insensitively, so "total" ranks the TOTAL code first', () => {
+    const reordered = initComtradeReferenceService(config, storage);
+    // @ts-expect-error — seeding private map
+    reordered.hsByCode = new Map(
+      [
+        { id: '9031', text: '9031 - Totalizers and counters', aggrLevel: 4 as const },
+        { id: 'TOTAL', text: 'Total - All H6 commodities', aggrLevel: 0 as const },
+      ].map((row) => [row.id, { ...row, isLeaf: false, recommendedQueryCode: row.id }]),
+    );
+    expect(ids(reordered.searchHsCodes('total'))).toEqual(['TOTAL', '9031']);
+    expect(ids(reordered.searchHsCodes('tot'))).toEqual(['TOTAL', '9031']);
+  });
+
+  it('ranks EB codes case-insensitively and keeps their dots', () => {
+    for (const query of ['SA', 'sa']) {
+      expect(ids(ref.searchEbopsCategories(query))).toEqual([
+        'SA',
+        'Say',
+        'Saz',
+        '310',
+        '894',
+        '950',
+        '10.1.1.2',
+        'C.1',
+      ]);
+    }
+    expect(ids(ref.searchEbopsCategories('3.1'))).toEqual([
+      '3.1',
+      '3.1.1',
+      '3.1.1.a',
+      '3.1.2',
+      '215',
+      '246',
+    ]);
+    expect(ids(ref.searchEbopsCategories('31'))).toEqual(['310']);
+  });
+
+  it('tables the tiers: exact, prefix, whole word past a first embedded hit, then substring', () => {
+    const tiers = initComtradeReferenceService(config, storage);
+    // @ts-expect-error — seeding private map
+    tiers.ebopsByCode = new Map(
+      [
+        { id: 'X1', text: 'Teapots and teacups' },
+        { id: 'X2', text: 'Steamed tea leaves' },
+        { id: 'X3', text: 'Tea-based drinks' },
+        { id: 'X4', text: 'Tea2go blends' },
+        { id: 'X5', text: 'Ëtea imports' },
+        { id: 'X6', text: 'Cocoa' },
+        { id: 'TEA.1', text: 'Herbal infusions' },
+        { id: 'TEA', text: 'Infusions' },
+        { id: 'X7', text: 'xa a ab' },
+        { id: 'X8', text: 'xa a a' },
+        { id: 'X9', text: 'Tea0 blends' },
+      ].map((row) => [row.id, row]),
+    );
+    for (const query of ['tea', 'TEA', 'Tea']) {
+      expect(ids(tiers.searchEbopsCategories(query)), query).toEqual([
+        'TEA',
+        'TEA.1',
+        'X2',
+        'X3',
+        'X1',
+        'X4',
+        'X5',
+        'X9',
+      ]);
+    }
+    // "a a" first occurs in X8 after "x"; only the overlapping occurrence after it stands alone.
+    expect(ids(tiers.searchEbopsCategories('a a'))).toEqual(['X8', 'X7']);
+  });
+
+  describe('timing', () => {
+    it.each<[string, (size: number) => string]>([
+      ['a digit run', (size) => '1'.repeat(size)],
+      ['a dotted digit run', (size) => '1.'.repeat(size / 2)],
+      ['a digit run ending in a letter', (size) => `${'1'.repeat(size - 1)}x`],
+      ['one long line ending in a break', (size) => `${'§1 x'.repeat(size / 4)}\ny`],
+      ['breaks throughout', (size) => '  \r\n'.repeat(size / 4)],
+    ])('scales linearly in query length for %s', (_shape, queryOf) => {
+      for (const search of [
+        (query: string) => () => ref.searchHsCodes(query),
+        (query: string) => () => ref.searchEbopsCategories(query),
+      ]) {
+        expectLinearGrowth((size) => search(queryOf(size)), 5_000, 32);
+      }
+    });
+
+    it('scales linearly in rows and description length when every position is a hit', () => {
+      /** A catalog of `rows` descriptions, each `length` letters long: "aa" occurs, never whole. */
+      const searchOf = (rows: number, length: number) => {
+        const svc = initComtradeReferenceService(config, storage);
+        // @ts-expect-error — seeding private map
+        svc.hsByCode = new Map(
+          Array.from({ length: rows }, (_, i) => {
+            const id = String(100_000 + i);
+            const text = 'a'.repeat(length);
+            return [id, { id, text, aggrLevel: 6, isLeaf: true, recommendedQueryCode: id }];
+          }),
+        );
+        return () => svc.searchHsCodes('aa');
+      };
+      // Short descriptions keep per-row work small, so a cost growing with the row count shows.
+      expectLinearGrowth((rows) => searchOf(rows, 4), 250, 16);
+      expectLinearGrowth((length) => searchOf(64, length), 32, 16);
+    });
+
+    // The letter-or-digit refinement is a regex: shapes that reach it stay under Bun's ~80k switch.
+    it.each<[string, (size: number) => string, number]>([
+      ['a digit run', (size) => '1'.repeat(size), 5_000],
+      ['one long line ending in a break', (size) => `${'§1 x'.repeat(size / 4)}\ny`, 1_200],
+      ['breaks throughout', (size) => '  \r\n'.repeat(size / 4), 1_200],
+      ['punctuation only', (size) => '.-'.repeat(size / 2), 1_200],
+    ])('validates query input linearly in its length for %s', (_shape, queryOf, base) => {
+      for (const definition of [searchCommoditiesTool, listServiceCategoriesTool]) {
+        expectLinearGrowth(
+          (size) => {
+            const input = { query: queryOf(size) };
+            return () => definition.input.safeParse(input);
+          },
+          base,
+          32,
+        );
+      }
+    });
   });
 });
 
@@ -1137,5 +1526,516 @@ describe('reference catalog row validation', () => {
     await vi.runAllTimersAsync();
     expect((await pending).get(8)?.qtyAbbr).toBe('kg');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('country lookup by common, official, and accent-free names', () => {
+  // Captured rows; names, ISO codes, notes, and trailing spaces are upstream's.
+  const reporters = [
+    reporterRow(826, 'United Kingdom', 'GB', 'GBR', '1900-01-01'),
+    reporterRow(804, 'Ukraine', 'UA', 'UKR', '1992-01-01'),
+    {
+      ...reporterRow(410, 'Rep. of Korea', 'KR', 'KOR', '1900-01-01'),
+      reporterNote: 'Republic of Korea',
+    },
+    {
+      ...reporterRow(408, "Dem. People's Rep. of Korea", 'KP', 'PRK', '1900-01-01'),
+      reporterNote: "Democratic People's Republic of Korea",
+    },
+    reporterRow(792, 'Türkiye', 'TR', 'TUR', '1900-01-01'),
+    reporterRow(203, 'Czechia', 'CZ', 'CZE', '1993-01-01'),
+    reporterRow(384, "Côte d'Ivoire", 'CI', 'CIV', '1900-01-01'),
+    reporterRow(784, 'United Arab Emirates', 'AE', 'ARE', '1900-01-01'),
+    reporterRow(418, "Lao People's Dem. Rep.", 'LA', 'LAO', '1900-01-01'),
+    reporterRow(104, 'Myanmar', 'MM', 'MMR', '1900-01-01'),
+    {
+      ...reporterRow(446, 'China, Macao SAR', 'MO', 'MAC', '1900-01-01'),
+      reporterNote: 'China, Macao Special Administrative Region',
+    },
+    reporterRow(528, 'Netherlands', 'NL', 'NLD', '1900-01-01'),
+    {
+      ...reporterRow(748, 'Eswatini', 'SZ', 'SWZ', '2000-01-01'),
+      reporterNote: 'the Kingdom of Eswatini',
+    },
+    reporterRow(132, 'Cabo Verde', 'CV', 'CPV', '1900-01-01'),
+    reporterRow(626, 'Timor-Leste', 'TL', 'TLS', '2002-05-20'),
+    {
+      ...reporterRow(180, 'Dem. Rep. of the Congo', 'CD', 'COD', '1900-01-01'),
+      reporterNote: 'Democratic Republic of the Congo',
+    },
+    reporterRow(324, 'Guinea', 'GN', 'GIN', '1900-01-01'),
+    reporterRow(226, 'Equatorial Guinea', 'GQ', 'GNQ', '1900-01-01'),
+    reporterRow(624, 'Guinea-Bissau', 'GW', 'GNB', '1900-01-01'),
+    reporterRow(729, 'Sudan', 'SD', 'SDN', '2011-07-01'),
+    reporterRow(728, 'South Sudan', 'SS', 'SSD', '2011-07-01'),
+    {
+      ...reporterRow(736, 'Sudan (...2011)', 'SD', 'SDN', '1900-01-01', '2011-06-30'),
+      reporterNote: 'Former Sudan',
+    },
+    reporterRow(442, 'Luxembourg', 'LU', 'LUX', '1999-01-01'),
+    reporterRow(56, 'Belgium', 'BE', 'BEL', '1999-01-01'),
+    {
+      ...reporterRow(58, 'Belgium-Luxembourg (...1998)', 'BE', 'BEL', '1900-01-01', '1998-12-31'),
+      reporterNote: 'Belgium-Luxembourg',
+    },
+    {
+      ...reporterRow(842, 'USA', 'US', 'USA', '1981-01-01'),
+      reporterNote: 'USA, Puerto Rico and US Virgin Islands',
+    },
+    {
+      ...reporterRow(841, 'USA and Puerto Rico (...1980)', 'US', 'USA', '1900-01-01', '1980-12-31'),
+      reporterNote: 'USA and Puerto Rico',
+    },
+    reporterRow(638, 'Réunion (Overseas France)', 'RE', 'REU', '1900-01-01', '1996-12-31'),
+    reporterRow(531, 'Curaçao', 'CW', 'CUW', '2010-11-01'),
+    {
+      ...reporterRow(214, 'Dominican Rep.', 'DO', 'DOM', '1900-01-01'),
+      reporterNote: 'Dominican Republic',
+    },
+    { ...reporterRow(251, 'France', 'FR', 'FRA', '1900-01-01'), reporterNote: 'France, Monaco' },
+    reporterRow(276, 'Germany', 'DE', 'DEU', '1991-01-01'),
+    {
+      ...reporterRow(
+        280,
+        'Fed. Rep. of Germany (...1990)',
+        'DE',
+        'DEU',
+        '1900-01-01',
+        '1990-12-31',
+      ),
+      reporterNote: 'Former Federal Republic of Germany',
+    },
+    {
+      ...reporterRow(
+        278,
+        'Dem. Rep. of Germany (...1990)',
+        'DD',
+        'DDR',
+        '1900-01-01',
+        '1990-12-31',
+      ),
+      reporterNote: 'Former Democratic Republic of Germany',
+    },
+    reporterRow(704, 'Viet Nam', 'VN', 'VNM', '1975-01-01'),
+    {
+      ...reporterRow(
+        866,
+        'Dem. Rep. of Vietnam (...1974)',
+        'VD',
+        'VDR',
+        '1900-01-01',
+        '1974-12-31',
+      ),
+      reporterNote: 'Former Democratic Republic of Vietnam',
+    },
+    {
+      ...reporterRow(868, 'Rep. of Vietnam (...1974)', 'VN', 'VNM', '1900-01-01', '1974-12-31'),
+      reporterNote: 'Former Republic of Vietnam',
+    },
+    {
+      ...reporterRow(975, 'ASEAN', 'R4', 'R4 ', '1967-08-01'),
+      isGroup: true,
+      reporterNote: 'ASEAN',
+    },
+  ];
+  const partners = [
+    partnerRow(826, 'United Kingdom', 'GB', 'GBR', '1900-01-01'),
+    partnerRow(804, 'Ukraine', 'UA', 'UKR', '1992-01-01'),
+    {
+      ...partnerRow(647, 'Ryukyu Isd', undefined, '_RI', '1900-01-01', '1972-12-31'),
+      partnerNote: 'Ryukyu Island',
+    },
+    partnerRow(840, 'United States of America', 'US', 'USA', '1900-01-01'),
+    partnerRow(630, 'Puerto Rico ', 'PR', 'PRI', '1900-01-01'),
+    partnerRow(438, 'Liechtenstein ', 'LI', 'LIE', '1900-01-01'),
+    { ...partnerRow(837, 'Bunkers', undefined, 'X1 ', '1900-01-01'), partnerNote: 'Bunkers' },
+    partnerRow(250, 'Metropolitan France', 'FR', 'FRA', '1900-01-01'),
+  ];
+  let ref: ReferenceService;
+  const ids = (query: string, role?: 'reporter' | 'partner') =>
+    ref.searchCountries(query, role).map((entry) => entry.id);
+
+  /** Least thread CPU time per call in microseconds, over several batches of `calls` calls. */
+  function leastCpuPerCallUs(run: () => void, calls: number): number {
+    let least = Number.POSITIVE_INFINITY;
+    for (let sample = 0; sample < 5; sample++) {
+      const start = process.threadCpuUsage();
+      for (let call = 0; call < calls; call++) run();
+      const used = process.threadCpuUsage(start);
+      least = Math.min(least, (used.user + used.system) / calls);
+    }
+    return least;
+  }
+
+  /**
+   * Doubles a query shape from `baseLength` to 64× and, at each size before the next, asserts the
+   * least growth over a re-timed baseline stays under 4× the size ratio: linear growth is the size
+   * ratio itself, quadratic its square (4,096 at the full span, against a bound of 256).
+   */
+  function expectLinearSearch(shape: (length: number) => string, baseLength: number): void {
+    const perCall = (length: number) => {
+      const query = shape(length);
+      const calls = Math.max(1, Math.round((16 * baseLength) / length));
+      return leastCpuPerCallUs(() => ref.searchCountries(query), calls);
+    };
+    for (let factor = 2; factor <= 64; factor *= 2) {
+      let growth = Number.POSITIVE_INFINITY;
+      for (let pair = 0; pair < 3; pair++) {
+        growth = Math.min(growth, perCall(baseLength * factor) / perCall(baseLength));
+      }
+      expect(growth, `${baseLength * factor} vs ${baseLength} characters`).toBeLessThan(4 * factor);
+    }
+  }
+
+  beforeEach(async () => {
+    stubFetch({
+      'Reporters.json': { results: reporters },
+      'partnerAreas.json': { results: partners },
+    });
+    ref = initComtradeReferenceService(config, storage);
+    await ref.initialize();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ['UK', 826],
+    ['Britain', 826],
+    ['Great Britain', 826],
+    ['South Korea', 410],
+    ['North Korea', 408],
+    ['Turkey', 792],
+    ['Czech Republic', 203],
+    ['Ivory Coast', 384],
+    ['UAE', 784],
+    ['Laos', 418],
+    ['Burma', 104],
+    ['Macau', 446],
+    ['Holland', 528],
+    ['Swaziland', 748],
+    ['Cape Verde', 132],
+    ['East Timor', 626],
+    ['DRC', 180],
+  ] as const)('leads the common name %s with %i in any case', (query, code) => {
+    for (const spelling of [query, query.toLowerCase(), ` ${query.toUpperCase()} `]) {
+      expect(ids(spelling)[0]).toBe(code);
+    }
+  });
+
+  it('keeps partial-name hits after an alias hit, under the role filter too', () => {
+    expect(ids('UK')).toEqual([826, 804, 647]);
+    expect(ids('UK', 'reporter')).toEqual([826, 804]);
+    expect(ids('UK', 'partner')).toEqual([826, 804, 647]);
+  });
+
+  it.each([
+    ['Turkiye', 792],
+    ['Türkiye', 792],
+    ['TÜRKIYE', 792],
+    ["Cote d'Ivoire", 384],
+    ["Côte d'Ivoire", 384],
+    ['Reunion', 638],
+    ['Réunion', 638],
+    ['Curacao', 531],
+    ['Curaçao', 531],
+  ] as const)(
+    'folds case and accents: %s leads with %i, precomposed or decomposed',
+    (query, code) => {
+      for (const spelling of [query, query.normalize('NFD')]) {
+        expect(ids(spelling)[0]).toBe(code);
+      }
+    },
+  );
+
+  it.each([
+    ['Republic of Korea', [410, 408]],
+    ['Dominican Republic', [214]],
+    ['Democratic Republic of the Congo', [180]],
+    ['Monaco', [251, 250]],
+  ] as const)('matches the long-form catalog note: %s', (query, expected) => {
+    expect(ids(query)).toEqual(expected);
+  });
+
+  it.each([
+    ['Guinea', [324, 226, 624]],
+    ['Sudan', [729, 736, 728]],
+    ['Luxembourg', [442, 56, 58]],
+    ['Puerto Rico', [630, 842, 841, 840]],
+  ] as const)('ranks an exact name before longer names: %s', (query, expected) => {
+    expect(ids(query)).toEqual(expected);
+  });
+
+  it.each(['US', 'USA', 'United States', 'United States of America'])(
+    'keeps reporter 842 first for %s, ISO-3 siblings ranked with the match that pulled them in',
+    (query) => {
+      expect(ids(query)).toEqual([842, 841, 840]);
+    },
+  );
+
+  it('keeps Germany and Viet Nam first under the role and group filters', async () => {
+    expect(ids('Germany')).toEqual([276, 280, 278]);
+    expect(ids('Germany', 'reporter')).toEqual([276, 280, 278]);
+    expect(ids('vietnam')).toEqual([704, 866, 868]);
+    const groups = await runToolContract(lookupCountriesTool, {
+      query: 'ASEAN',
+      include_groups: false,
+    });
+    expect(groups.structuredContent).toMatchObject({ matches: [], totalMatches: 0 });
+  });
+
+  it('trims catalog names and ISO codes when indexing, on lookup, rendering, and the resource', async () => {
+    expect(ref.getCountryByCode(630)?.name).toBe('Puerto Rico');
+    expect(ref.getCountryByCode(438)?.name).toBe('Liechtenstein');
+    expect(ref.getCountryByCode(975)?.iso3).toBe('R4');
+    expect(ids('X1')).toEqual([837]);
+    const result = await runToolContract(lookupCountriesTool, { query: 'puerto rico' });
+    expect(result.structuredContent).toMatchObject({
+      matches: [
+        { id: 630, name: 'Puerto Rico', iso3: 'PRI', iso2: 'PR' },
+        { id: 842 },
+        { id: 841 },
+        { id: 840 },
+      ],
+    });
+    expect(JSON.stringify(result.content)).toContain('**Puerto Rico** (code: 630)');
+    const { countries } = countriesResource.handler({}, createMockContext());
+    expect(countries.find((entry) => entry.id === 630)?.name).toBe('Puerto Rico');
+    expect(countries.find((entry) => entry.id === 837)?.iso3).toBe('X1');
+  });
+
+  it('lets a catalog name, note, or ISO code equal to an alias key win over the alias', async () => {
+    stubFetch({
+      'Reporters.json': {
+        results: [
+          reporterRow(104, 'Myanmar', 'MM', 'MMR', '1900-01-01'),
+          reporterRow(528, 'Netherlands', 'NL', 'NLD', '1900-01-01'),
+          reporterRow(826, 'United Kingdom', 'GB', 'GBR', '1900-01-01'),
+        ],
+      },
+      'partnerAreas.json': {
+        // Hypothetical rows: no captured name, note, or ISO code equals an alias key.
+        results: [
+          partnerRow(901, 'Burma', undefined, 'XBU', '1900-01-01'),
+          { ...partnerRow(902, 'Hollandia', 'UK', 'XHO', '1900-01-01'), partnerNote: 'Holland' },
+        ],
+      },
+    });
+    const fresh = initComtradeReferenceService(config, storage);
+    await fresh.initialize();
+    const found = (query: string) => fresh.searchCountries(query).map((entry) => entry.id);
+    expect(found('Burma')).toEqual([901]);
+    expect(found('Holland')).toEqual([902]);
+    expect(found('UK')).toEqual([902]);
+    // An alias whose target the catalog no longer lists resolves to nothing.
+    expect(found('Laos')).toEqual([]);
+  });
+
+  it.each(['́', ' ̖́ ', '́ ́', '⃝'])(
+    'matches nothing for a query that folds to empty text: %j',
+    async (query) => {
+      expect(ids(query)).toEqual([]);
+      const result = await runToolContract(lookupCountriesTool, { query });
+      expect(result.structuredContent).toMatchObject({ matches: [], totalMatches: 0 });
+      expect(JSON.stringify(result.content)).toContain('**Matches:** 0');
+    },
+  );
+
+  const marks = String.fromCodePoint(0x0301, 0x0316); // combining classes 230 then 220
+  // One test per shape keeps each measurement campaign well inside the default test timeout.
+  it.each<[string, (length: number) => string, number]>([
+    // Below Bun's ~80k-character regex mode switch: one long line ending in a break, breaks
+    // throughout, and an alternating combining-mark run (canonical reordering's worst case).
+    ['one long line ending in a break', (length) => `${'§1 x'.repeat(length / 4)}\ny`, 1_000],
+    ['breaks throughout', (length) => '  \r\n'.repeat(length / 4), 1_000],
+    ['an alternating combining-mark run', (length) => `a${marks.repeat(length / 2)}`, 1_000],
+    // The full 5k → 320k span, on a shape that never crosses the switch.
+    ['a digit run', (length) => '7'.repeat(length), 5_000],
+  ])('normalizes a caller-sized query in linear time: %s', (_shape, shape, baseLength) => {
+    expectLinearSearch(shape, baseLength);
+  });
+});
+
+describe('published-under counterparts and catalog notes', () => {
+  // Captured 2026-11-11 rows; names, notes, groupings, and trailing spaces are upstream's.
+  const otherAsia = {
+    id: 490,
+    text: 'Other Asia, nes',
+    reporterCode: 490,
+    reporterDesc: 'Other Asia, nes',
+    reporterCodeIsoAlpha3: 'S19',
+    reporterNote: 'Other Asia, not elsewhere specified',
+    entryEffectiveDate: '1900-01-01T00:00:00',
+    isGroup: true,
+  };
+  const reporters = [
+    otherAsia,
+    { ...reporterRow(251, 'France', 'FR', 'FRA', '1900-01-01'), reporterNote: 'France, Monaco' },
+    { ...reporterRow(156, 'China', 'CN', 'CHN', '1900-01-01'), reporterNote: 'China' },
+    {
+      ...reporterRow(344, 'China, Hong Kong SAR', 'HK', 'HKG', '1900-01-01'),
+      reporterNote: 'China, Hong Kong Special Administrative Region',
+    },
+    {
+      ...reporterRow(446, 'China, Macao SAR', 'MO', 'MAC', '1900-01-01'),
+      reporterNote: 'China, Macao Special Administrative Region',
+    },
+  ];
+  const partners = [
+    partnerRow(158, 'Taiwan, Province of China', 'TW', 'TWN', '1900-01-01'),
+    {
+      ...partnerRow(490, 'Other Asia, nes', undefined, 'S19', '1900-01-01'),
+      partnerNote: 'Other Asia, not elsewhere specified',
+    },
+    {
+      ...partnerRow(250, 'Metropolitan France', 'FR', 'FRA', '1900-01-01'),
+      partnerNote: 'Metropolitan France',
+    },
+    { ...partnerRow(251, 'France', 'FR', 'FRA', '1900-01-01'), partnerNote: 'France, Monaco' },
+    partnerRow(412, 'Kosovo', undefined, '_KS', '1900-01-01'),
+    partnerRow(438, 'Liechtenstein ', 'LI', 'LIE', '1900-01-01'),
+    partnerRow(630, 'Puerto Rico ', 'PR', 'PRI', '1900-01-01'),
+  ];
+  const TAIWAN_NOTICE =
+    'UN Comtrade publishes the trade of 158 (Taiwan, Province of China) under 490 (Other Asia, nes), as reporter and as partner: query 490 as reporter_code or partner_code.';
+  let ref: ReferenceService;
+  const ids = (query: string, role?: 'reporter' | 'partner') =>
+    ref.searchCountries(query, role).map((entry) => entry.id);
+  /** The match codes and notice of a lookup, after checking the notice reached content[] too. */
+  async function lookup(input: Record<string, unknown>) {
+    const result = await runToolContract(lookupCountriesTool, input);
+    const { matches, notice } = result.structuredContent as {
+      matches: { id: number }[];
+      notice?: string;
+    };
+    const text = (result.content ?? []).map((block) => (block as { text: string }).text).join('\n');
+    if (notice !== undefined) expect(text).toContain(`> ${notice}`);
+    return { codes: matches.map((match) => match.id), notice, text };
+  }
+
+  beforeEach(async () => {
+    stubFetch({
+      'Reporters.json': { results: reporters },
+      'partnerAreas.json': { results: partners },
+    });
+    ref = initComtradeReferenceService(config, storage);
+    await ref.initialize();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    [
+      158,
+      {
+        referenceStatus: 'partner_only',
+        name: 'Taiwan, Province of China',
+        suggestedReporterCode: 490,
+        suggestionBasis: 'published_under',
+        suggestedReporterName: 'Other Asia, nes',
+      },
+    ],
+    // The ISO-3 counterparts (250 → 251, 578, 756, 840) are tabled in the suite above. Kosovo
+    // has no catalog link; Liechtenstein and Puerto Rico are included in a larger reporter (the
+    // 757 and 842 notes), not published under one.
+    [412, { referenceStatus: 'partner_only', name: 'Kosovo' }],
+    [438, { referenceStatus: 'partner_only', name: 'Liechtenstein' }],
+    [630, { referenceStatus: 'partner_only', name: 'Puerto Rico' }],
+    [490, { referenceStatus: 'reporter', name: 'Other Asia, nes' }],
+  ] as const)('names the counterpart of code %i', (code, status) => {
+    expect(ref.getReporterStatus(code)).toStrictEqual(status);
+  });
+
+  it('applies the 158 row only while 490 is an indexed reporter', async () => {
+    stubFetch({
+      'Reporters.json': { results: reporters.filter((row) => row.id !== 490) },
+      'partnerAreas.json': { results: partners },
+    });
+    ref = initComtradeReferenceService(config, storage);
+    await ref.initialize();
+    expect(ref.getReporterStatus(158)).toStrictEqual({
+      referenceStatus: 'partner_only',
+      name: 'Taiwan, Province of China',
+    });
+    // 490 is now a partner-only entry: it neither stands in for 158 nor is pulled in.
+    expect(await lookup({ query: 'Taiwan' })).toMatchObject({ codes: [158], notice: undefined });
+  });
+
+  it.each(['Taiwan', 'TW', 'TWN', ' taiwan '])(
+    'lists 490 before 158 for %j with a notice naming both',
+    async (query) => {
+      const any = await lookup({ query });
+      expect(any).toMatchObject({ codes: [490, 158], notice: TAIWAN_NOTICE });
+      expect(any.text.indexOf('(code: 490)')).toBeLessThan(any.text.indexOf('(code: 158)'));
+      expect(await lookup({ query, role: 'partner' })).toMatchObject({
+        codes: [490, 158],
+        notice: TAIWAN_NOTICE,
+      });
+      // 158 is left out as a reporter, and the notice still names it.
+      expect(await lookup({ query, role: 'reporter' })).toMatchObject({
+        codes: [490],
+        notice: TAIWAN_NOTICE,
+      });
+      // Reporters.json flags 490 a grouping; it stays because it stands in for 158.
+      expect(await lookup({ query, include_groups: false })).toMatchObject({
+        codes: [490, 158],
+        notice: TAIWAN_NOTICE,
+      });
+      expect(await lookup({ query, role: 'reporter', include_groups: false })).toMatchObject({
+        codes: [490],
+        notice: TAIWAN_NOTICE,
+      });
+    },
+  );
+
+  it('ranks 490 with the partial match on 158 that pulled it in, behind an exact match', () => {
+    // At 158's partial tier, reporter-valid 490 sorts by name among the other partial matches.
+    expect(ids('China')).toEqual([156, 344, 446, 490, 158]);
+  });
+
+  it('treats a direct match on 490 as a grouping with no notice', async () => {
+    expect(await lookup({ query: 'Other Asia' })).toMatchObject({
+      codes: [490],
+      notice: undefined,
+    });
+    expect(await lookup({ query: 'Other Asia', include_groups: false })).toMatchObject({
+      codes: [],
+    });
+  });
+
+  it('carries a catalog note that differs from the name on both surfaces', async () => {
+    const result = await runToolContract(lookupCountriesTool, { query: 'Monaco' });
+    const { matches } = result.structuredContent as { matches: Record<string, unknown>[] };
+    expect(matches).toMatchObject([
+      { id: 251, name: 'France', note: 'France, Monaco' },
+      { id: 250, name: 'Metropolitan France' },
+    ]);
+    // 250's note repeats its name, so the index keeps none.
+    expect(matches[1]).not.toHaveProperty('note');
+    const text = JSON.stringify(result.content);
+    expect(text).toContain('**France** (code: 251)');
+    expect(text).toContain('note: France, Monaco');
+    expect(text.match(/note: /g)).toHaveLength(1);
+    expect(ref.getCountryByCode(156)).not.toHaveProperty('note');
+    expect(ref.getCountryByCode(490)?.note).toBe('Other Asia, not elsewhere specified');
+  });
+
+  it('drops a note that equals the name once case and accents are folded', async () => {
+    stubFetch({
+      'Reporters.json': { results: reporters },
+      // Hypothetical row: no captured note differs from its name only in case or accents.
+      'partnerAreas.json': {
+        results: [
+          { ...partnerRow(531, 'Curaçao', 'CW', 'CUW', '2010-11-01'), partnerNote: 'CURACAO' },
+        ],
+      },
+    });
+    ref = initComtradeReferenceService(config, storage);
+    await ref.initialize();
+    expect(ref.getCountryByCode(531)).not.toHaveProperty('note');
+    expect(ids('curacao')).toEqual([531]);
   });
 });

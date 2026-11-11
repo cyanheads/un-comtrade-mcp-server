@@ -19,6 +19,7 @@ import {
 import type {
   CommodityCode,
   CountryEntry,
+  CountryMatch,
   EbopsCategory,
   EbScheme,
   HsCode,
@@ -63,6 +64,181 @@ function todayIso(): string {
 /** An entity is expired once its last valid day is before today; without an expiry it is current. */
 function isExpired(entry: CountryEntry, today: string): boolean {
   return entry.entryExpiredDate !== undefined && entry.entryExpiredDate < today;
+}
+
+const COMBINING_MARKS = /\p{M}/gu;
+
+/**
+ * Fold country text for comparison: lowercase with the locale-insensitive mapping, strip
+ * diacritics, trim. Lowercasing comes first, since stripping marks first can change which sigma a
+ * capital Σ becomes. Marks are stripped before NFD as well as after it: canonical reordering is
+ * quadratic in the length of a run of combining marks, and with the input's own marks gone a run
+ * is at most one character's decomposition. Every Unicode non-starter is a mark, so the early
+ * strip changes no result.
+ */
+function normalizeCountryText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(COMBINING_MARKS, '')
+    .normalize('NFD')
+    .replace(COMBINING_MARKS, '')
+    .trim();
+}
+
+/**
+ * Common names UN Comtrade's catalogs do not carry, keyed by folded name. Every target is a
+ * current entry valid as reporter and as partner. An alias applies only when no catalog name,
+ * note, or ISO code equals the query, so a catalog entry always wins over a colliding alias.
+ */
+const COUNTRY_ALIASES = new Map(
+  (
+    [
+      ['UK', 826], // United Kingdom
+      ['Britain', 826],
+      ['Great Britain', 826],
+      ['South Korea', 410], // Rep. of Korea
+      ['North Korea', 408], // Dem. People's Rep. of Korea
+      ['Turkey', 792], // Türkiye
+      ['Czech Republic', 203], // Czechia
+      ['Ivory Coast', 384], // Côte d'Ivoire
+      ['UAE', 784], // United Arab Emirates
+      ['Laos', 418], // Lao People's Dem. Rep.
+      ['Burma', 104], // Myanmar
+      ['Macau', 446], // China, Macao SAR
+      ['Holland', 528], // Netherlands
+      ['Swaziland', 748], // Eswatini
+      ['Cape Verde', 132], // Cabo Verde
+      ['East Timor', 626], // Timor-Leste
+      ['DRC', 180], // Dem. Rep. of the Congo
+    ] as const
+  ).map(([name, code]) => [normalizeCountryText(name), code]),
+);
+
+/**
+ * Partner-only codes whose trade UN Comtrade publishes under another code, as reporter and as
+ * partner, with no catalog field linking the two: no ISO code is shared and the target's note
+ * names no entity. A row applies only while its target is an indexed reporter-valid entry.
+ */
+const PUBLISHED_UNDER = new Map([
+  [158, 490], // Taiwan, Province of China → Other Asia, nes
+]);
+
+/**
+ * Lookup rank: 0 when an alias key, ISO code, name, or note equals the query; 1 when a name or
+ * note contains it.
+ */
+type CountryMatchTier = 0 | 1;
+
+/** One entry's folded fields: `exact` its ISO codes, name, and note; `texts` its name and note. */
+interface CountrySearchKeys {
+  exact: string[];
+  texts: string[];
+}
+
+/** Folded fields per entry, computed on first search; entries are never mutated once indexed. */
+const countrySearchKeys = new WeakMap<CountryEntry, CountrySearchKeys>();
+
+/** The tier at which an entry's own fields match a folded query, or undefined when none does. */
+function countryMatchTier(entry: CountryEntry, query: string): CountryMatchTier | undefined {
+  let keys = countrySearchKeys.get(entry);
+  if (!keys) {
+    const fold = (values: (string | undefined)[]) =>
+      values.filter((value) => value !== undefined).map(normalizeCountryText);
+    keys = {
+      exact: fold([entry.iso2, entry.iso3, entry.name, entry.note]),
+      texts: fold([entry.name, entry.note]),
+    };
+    countrySearchKeys.set(entry, keys);
+  }
+  if (keys.exact.includes(query)) return 0;
+  return keys.texts.some((text) => text.includes(query)) ? 1 : undefined;
+}
+
+/** Record `tier` for `key` unless it already holds a better (lower) one. */
+function keepBestTier<K>(tiers: Map<K, CountryMatchTier>, key: K, tier: CountryMatchTier): void {
+  const current = tiers.get(key);
+  if (current === undefined || tier < current) tiers.set(key, tier);
+}
+
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+/**
+ * Whether `text` holds a letter or digit of any script at `index`, a character that joins a match
+ * to a longer word; outside the text it holds none. ASCII, most of every catalog and the whole-word
+ * scan's hot path, is compared by code unit.
+ */
+function isWordCharacterAt(text: string, index: number): boolean {
+  const unit = text.charCodeAt(index);
+  if (Number.isNaN(unit)) return false;
+  if (unit < 0x80) {
+    return (
+      (unit >= 0x30 && unit <= 0x39) ||
+      (unit >= 0x41 && unit <= 0x5a) ||
+      (unit >= 0x61 && unit <= 0x7a)
+    );
+  }
+  return LETTER_OR_DIGIT.test(text.charAt(index));
+}
+
+/**
+ * The code a code-like query spells without its separators ("0901.11" → "090111"): a query of
+ * only digits, `.`, `-` and spaces with at least one digit. Undefined for any other query.
+ */
+function codeFromCodeLikeQuery(query: string): string | undefined {
+  let hasDigit = false;
+  for (let i = 0; i < query.length; i++) {
+    const unit = query.charCodeAt(i); // digits are 0x30-0x39; ".", "-" and " " 0x2e, 0x2d, 0x20
+    if (unit >= 0x30 && unit <= 0x39) hasDigit = true;
+    else if (unit !== 0x2e && unit !== 0x2d && unit !== 0x20) return;
+  }
+  return hasDigit ? query.replaceAll('.', '').replaceAll('-', '').replaceAll(' ', '') : undefined;
+}
+
+/**
+ * Whether `needle`, first found in `text` at `from`, has an occurrence with no letter or digit
+ * immediately before or after it. Scans with `indexOf`, never a pattern built from the caller's
+ * text, stepping one past each occurrence so an overlapping later one is checked too.
+ */
+function hasWholeWordMatch(text: string, needle: string, from: number): boolean {
+  for (let at = from; at >= 0; at = text.indexOf(needle, at + 1)) {
+    if (!isWordCharacterAt(text, at - 1) && !isWordCharacterAt(text, at + needle.length)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Catalog entries whose code starts with the query or whose description contains it, in four
+ * tiers: exact code, code prefix, whole-word description match, other description match. Ties
+ * keep catalog order, so offset pages walk one fixed order. Codes and descriptions compare
+ * case-insensitively. With `stripCodeSeparators` (HS and SITC, whose codes never contain a
+ * separator) a code-like query meets codes without its separators, while descriptions still match
+ * it as typed. The query is read a fixed number of times and each description scan is bounded by
+ * that description, so a call grows linearly with the query and with the catalog. An empty query
+ * matches every code as a prefix, so the description scan never sees an empty needle.
+ */
+function rankCatalogMatches<T extends { id: string; text: string }>(
+  entries: Iterable<T>,
+  query: string,
+  { stripCodeSeparators = false } = {},
+): T[] {
+  const typed = query.toLowerCase();
+  const code = (stripCodeSeparators ? codeFromCodeLikeQuery(typed) : undefined) ?? typed;
+  const tiers: [T[], T[], T[], T[]] = [[], [], [], []];
+  for (const entry of entries) {
+    const id = entry.id.toLowerCase();
+    if (id === code) {
+      tiers[0].push(entry);
+    } else if (id.startsWith(code)) {
+      tiers[1].push(entry);
+    } else {
+      const description = entry.text.toLowerCase();
+      const at = description.indexOf(typed);
+      if (at >= 0) tiers[hasWholeWordMatch(description, typed, at) ? 2 : 3].push(entry);
+    }
+  }
+  return tiers.flat();
 }
 
 /** Indexes all UN Comtrade reference data in memory for fast lookups. */
@@ -137,14 +313,22 @@ export class ComtradeReferenceService {
     }
   }
 
-  /** Index a country row unless its code is already indexed; Reporters.json is indexed first. */
+  /**
+   * Index a country row unless its code is already indexed; Reporters.json is indexed first.
+   * Upstream pads some names and ISO codes with trailing spaces ("Puerto Rico ", "X1 "), so names,
+   * codes, and notes are trimmed. A note that folds to the name ("Metropolitan France") is dropped:
+   * it matches no query the name does not, and tells a reader nothing.
+   */
   private indexCountry(row: RawCountry, validAsReporter: boolean): void {
     if (this.countriesByCode.has(row.id)) return;
-    const iso2 = row.reporterCodeIsoAlpha2 || row.PartnerCodeIsoAlpha2;
-    const iso3 = row.reporterCodeIsoAlpha3 || row.PartnerCodeIsoAlpha3;
+    const iso2 = (row.reporterCodeIsoAlpha2 || row.PartnerCodeIsoAlpha2)?.trim();
+    const iso3 = (row.reporterCodeIsoAlpha3 || row.PartnerCodeIsoAlpha3)?.trim();
+    const name = row.text.trim();
+    const note = (row.reporterNote || row.partnerNote)?.trim();
     this.countriesByCode.set(row.id, {
       id: row.id,
-      name: row.text,
+      name,
+      ...(note && normalizeCountryText(note) !== normalizeCountryText(name) && { note }),
       ...(iso2 && { iso2 }),
       ...(iso3 && { iso3 }),
       validAsReporter,
@@ -160,15 +344,26 @@ export class ComtradeReferenceService {
   }
 
   /**
-   * Classify a code used as a reporter: reporter-valid, partner-only (naming the reporter-valid
-   * entry with the same ISO-3 identity, current before expired, then lowest code), or in neither
-   * catalog. ISO-2 does not qualify: it was reassigned between entities (BQ, CS). Annotates empty
-   * results only; never reject a request on it.
+   * Classify a code used as a reporter: reporter-valid, partner-only, or in neither catalog. A
+   * partner-only code names the reporter-valid code to query instead: its `PUBLISHED_UNDER`
+   * target, else the entry with the same ISO-3 identity, current before expired, then lowest code.
+   * ISO-2 does not qualify: it was reassigned between entities (BQ, CS). Annotates empty results
+   * only; never reject a request on it.
    */
   getReporterStatus(code: number): ReporterStatus {
     const entry = this.countriesByCode.get(code);
     if (!entry) return { referenceStatus: 'unknown' };
     if (entry.validAsReporter) return { referenceStatus: 'reporter', name: entry.name };
+    const publishedUnder = this.publishedUnderTarget(entry);
+    if (publishedUnder) {
+      return {
+        referenceStatus: 'partner_only',
+        name: entry.name,
+        suggestedReporterCode: publishedUnder.id,
+        suggestionBasis: 'published_under',
+        suggestedReporterName: publishedUnder.name,
+      };
+    }
     const today = todayIso();
     const [suggested] = Array.from(this.countriesByCode.values())
       .filter(
@@ -176,11 +371,21 @@ export class ComtradeReferenceService {
           candidate.validAsReporter && entry.iso3 !== undefined && candidate.iso3 === entry.iso3,
       )
       .sort((a, b) => Number(isExpired(a, today)) - Number(isExpired(b, today)) || a.id - b.id);
-    return {
-      referenceStatus: 'partner_only',
-      name: entry.name,
-      ...(suggested && { suggestedReporterCode: suggested.id }),
-    };
+    return suggested
+      ? {
+          referenceStatus: 'partner_only',
+          name: entry.name,
+          suggestedReporterCode: suggested.id,
+          suggestionBasis: 'iso3',
+        }
+      : { referenceStatus: 'partner_only', name: entry.name };
+  }
+
+  /** The indexed reporter-valid entry a `PUBLISHED_UNDER` row names for this one, if any. */
+  private publishedUnderTarget(entry: CountryEntry): CountryEntry | undefined {
+    const code = PUBLISHED_UNDER.get(entry.id);
+    const target = code === undefined ? undefined : this.countriesByCode.get(code);
+    return target?.validAsReporter ? target : undefined;
   }
 
   /** Look up an HS code entry. */
@@ -241,7 +446,10 @@ export class ComtradeReferenceService {
     return index;
   }
 
-  /** Search the complete selected catalog, retaining native HS or SITC levels. */
+  /**
+   * Search the complete selected catalog, ranked by `rankCatalogMatches` and retaining native HS
+   * or SITC levels. A dotted, spaced, or hyphenated code ("071.1") compares without its separators.
+   */
   async searchCommodityCodes(
     query: string,
     classification: string,
@@ -249,17 +457,11 @@ export class ComtradeReferenceService {
     signal?: AbortSignal,
   ): Promise<CommodityCode[]> {
     signal?.throwIfAborted();
-    if (classification === 'HS')
-      return this.searchHsCodes(query).filter(
-        (entry) => aggrLevel === undefined || entry.aggrLevel === aggrLevel,
-      );
+    const atLevel = (entry: CommodityCode) =>
+      aggrLevel === undefined || entry.aggrLevel === aggrLevel;
+    if (classification === 'HS') return this.searchHsCodes(query).filter(atLevel);
     const codes = await this.getCommodityCodes(classification, signal);
-    const q = query.toLowerCase().trim();
-    return Array.from(codes.values()).filter(
-      (entry) =>
-        (aggrLevel === undefined || entry.aggrLevel === aggrLevel) &&
-        (entry.id.toLowerCase().startsWith(q) || entry.text.toLowerCase().includes(q)),
-    );
+    return rankCatalogMatches(codes.values(), query, { stripCodeSeparators: true }).filter(atLevel);
   }
 
   /** Lazily load quantity units within a ten-second deadline. Unknown codes remain absent; -1 explicitly means unavailable. */
@@ -302,7 +504,8 @@ export class ComtradeReferenceService {
   }
 
   /**
-   * EB categories matching an optional keyword or code prefix, each tagged with the scheme
+   * EB categories matching an optional keyword or code, ranked by `rankCatalogMatches` (every
+   * category in catalog order for an empty or omitted query), each tagged with the scheme
    * catalogs (EB10, EB10S, EB02) that list its code. A code whose EB.json parent is no EB.json
    * code takes the parent a scheme catalog gives it, keeping EB.json's as `ebParent` (EB10's top
    * level: `TOTAL` → `200`). If any scheme catalog fails to load, the categories come back
@@ -376,67 +579,90 @@ export class ComtradeReferenceService {
   }
 
   /**
-   * Search country/area entries by name fragment or ISO code (case-insensitive). Each match also
-   * pulls in the entries sharing its ISO-3 identity; ISO-2 codes were reassigned between entities,
-   * so they never expand a match. Ordered exact ISO match, reporter-valid, current before
-   * expired, name, then code.
+   * Search country/area entries by name, official name, common name, or ISO code, compared after
+   * `normalizeCountryText` (case, accents, surrounding spaces ignored). Exact matches, where an
+   * alias key, ISO-2/ISO-3 code, name, or catalog note equals the query, rank before partial ones,
+   * where a name or note contains it; a common-name alias applies only when no catalog field
+   * equals the query. Entries `withPulledInEntries` adds rank with the match that pulled them in;
+   * one pulled in as the code a match's trade is published under carries that match as
+   * `standsInFor`, also when the role filter leaves the match out. Within a rank: reporter-valid,
+   * current before expired, name, then code. A query that folds to empty text (combining marks
+   * alone) matches nothing.
    */
-  searchCountries(query: string, roleFilter?: 'reporter' | 'partner' | 'any'): CountryEntry[] {
-    const q = query.toLowerCase().trim();
-    const exactIso = (entry: CountryEntry) =>
-      entry.iso2?.toLowerCase() === q || entry.iso3?.toLowerCase() === q;
-    const matches = (entry: CountryEntry) =>
-      entry.name.toLowerCase().includes(q) || exactIso(entry);
-    const identities = new Set<string>();
+  searchCountries(query: string, roleFilter?: 'reporter' | 'partner' | 'any'): CountryMatch[] {
+    const q = normalizeCountryText(query);
+    // Every name contains the empty string, so an empty key would match the whole catalog.
+    if (q === '') return [];
+    const direct = new Map<CountryEntry, CountryMatchTier>();
     for (const entry of this.countriesByCode.values()) {
-      if (entry.iso3 && matches(entry)) identities.add(entry.iso3);
+      const tier = countryMatchTier(entry, q);
+      if (tier !== undefined) direct.set(entry, tier);
     }
+    const aliasCode = COUNTRY_ALIASES.get(q);
+    const aliasTarget = aliasCode === undefined ? undefined : this.countriesByCode.get(aliasCode);
+    if (aliasTarget && ![...direct.values()].includes(0)) direct.set(aliasTarget, 0);
+    const { tiers, standsInFor } = this.withPulledInEntries(direct);
     const today = todayIso();
-    return Array.from(this.countriesByCode.values())
+    return Array.from(tiers)
       .filter(
-        (entry) =>
-          (matches(entry) || (entry.iso3 !== undefined && identities.has(entry.iso3))) &&
+        ([entry]) =>
           (roleFilter !== 'reporter' || entry.validAsReporter) &&
           (roleFilter !== 'partner' || this.partnerCodes.has(entry.id)),
       )
       .sort(
-        (a, b) =>
-          Number(exactIso(b)) - Number(exactIso(a)) ||
+        ([a, tierA], [b, tierB]) =>
+          tierA - tierB ||
           Number(b.validAsReporter) - Number(a.validAsReporter) ||
           Number(isExpired(a, today)) - Number(isExpired(b, today)) ||
           a.name.localeCompare(b.name) ||
           a.id - b.id,
-      );
+      )
+      .map(([entry]) => {
+        const source = standsInFor.get(entry);
+        return source ? { ...entry, standsInFor: source } : entry;
+      });
   }
 
   /**
-   * Search HS codes by keyword or code prefix.
-   * Matches against description text or code string.
+   * The direct matches plus the entries they pull in, each pulled-in entry at the best tier of a
+   * match that pulled it in: the entries sharing a match's ISO-3 identity, and a match's
+   * `PUBLISHED_UNDER` target, recorded in `standsInFor` against that match. ISO-2 codes were
+   * reassigned between entities, so they never pull anything in. One hop: a pulled-in entry pulls
+   * in nothing further.
    */
-  searchHsCodes(query: string, aggrLevel?: 2 | 4 | 6): HsCode[] {
-    const q = query.toLowerCase().trim();
-    const results: HsCode[] = [];
-    for (const entry of this.hsByCode.values()) {
-      if (aggrLevel && entry.aggrLevel !== aggrLevel) continue;
-      const codeMatch = entry.id.startsWith(q);
-      const textMatch = entry.text.toLowerCase().includes(q);
-      if (codeMatch || textMatch) results.push(entry);
-    }
-    return results;
-  }
-
-  /**
-   * Search EBOPS categories by keyword or code prefix.
-   */
-  searchEbopsCategories(query: string): EbopsCategory[] {
-    const q = query.toLowerCase().trim();
-    const results: EbopsCategory[] = [];
-    for (const entry of this.ebopsByCode.values()) {
-      if (entry.id.toLowerCase().startsWith(q) || entry.text.toLowerCase().includes(q)) {
-        results.push(entry);
+  private withPulledInEntries(direct: ReadonlyMap<CountryEntry, CountryMatchTier>): {
+    tiers: Map<CountryEntry, CountryMatchTier>;
+    standsInFor: Map<CountryEntry, CountryEntry>;
+  } {
+    const iso3Tiers = new Map<string, CountryMatchTier>();
+    const tiers = new Map(direct);
+    const standsInFor = new Map<CountryEntry, CountryEntry>();
+    for (const [entry, tier] of direct) {
+      if (entry.iso3 !== undefined) keepBestTier(iso3Tiers, entry.iso3, tier);
+      const target = this.publishedUnderTarget(entry);
+      if (target) {
+        keepBestTier(tiers, target, tier);
+        standsInFor.set(target, entry);
       }
     }
-    return results;
+    for (const entry of this.countriesByCode.values()) {
+      const tier = entry.iso3 === undefined ? undefined : iso3Tiers.get(entry.iso3);
+      if (tier !== undefined) keepBestTier(tiers, entry, tier);
+    }
+    return { tiers, standsInFor };
+  }
+
+  /**
+   * Search HS codes by keyword or code, ranked by `rankCatalogMatches`. A dotted, spaced, or
+   * hyphenated code ("0901.11") compares without its separators.
+   */
+  searchHsCodes(query: string): HsCode[] {
+    return rankCatalogMatches(this.hsByCode.values(), query, { stripCodeSeparators: true });
+  }
+
+  /** Search EBOPS categories by keyword or code, ranked by `rankCatalogMatches`; codes keep dots. */
+  searchEbopsCategories(query: string): EbopsCategory[] {
+    return rankCatalogMatches(this.ebopsByCode.values(), query);
   }
 
   /**

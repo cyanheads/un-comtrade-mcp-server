@@ -21,9 +21,36 @@ export interface CountryEntry {
   iso3?: string;
   /** Display name. */
   name: string;
+  /**
+   * Upstream's long-form name or coverage note, e.g. "Republic of Korea" or "France, Monaco";
+   * absent when it only repeats the name.
+   */
+  note?: string;
   /** Whether this area can be used as a reporter code. */
   validAsReporter: boolean;
 }
+
+/**
+ * A country lookup match. `standsInFor` is the matched entry whose trade UN Comtrade publishes
+ * under this one (490 Other Asia, nes for 158 Taiwan, Province of China).
+ */
+export type CountryMatch = CountryEntry & { standsInFor?: CountryEntry };
+
+/**
+ * The reporter-valid code to query instead of a partner-only one, by basis: `iso3`, the entry
+ * sharing its ISO-3 identity, current before expired (250 Metropolitan France → 251 France);
+ * `published_under`, the code UN Comtrade publishes the entity's trade under, which neither
+ * catalog links to it (158 → 490 Other Asia, nes).
+ */
+type ReporterSuggestion =
+  | { suggestedReporterCode?: undefined }
+  | { suggestedReporterCode: number; suggestionBasis: 'iso3' }
+  | {
+      suggestedReporterCode: number;
+      suggestionBasis: 'published_under';
+      /** Catalog name of the suggested code. */
+      suggestedReporterName: string;
+    };
 
 /**
  * How the startup reference index classifies a code used as a reporter. It annotates empty
@@ -31,12 +58,7 @@ export interface CountryEntry {
  */
 export type ReporterStatus =
   | { referenceStatus: 'reporter'; name: string }
-  | {
-      referenceStatus: 'partner_only';
-      name: string;
-      /** Reporter-valid entry with the same ISO-3 identity, current before expired. */
-      suggestedReporterCode?: number;
-    }
+  | ({ referenceStatus: 'partner_only'; name: string } & ReporterSuggestion)
   | { referenceStatus: 'unknown' };
 
 /** An HS commodity code entry (goods). */
@@ -70,8 +92,8 @@ const referenceDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}/);
 
 /**
  * One row of either country file. Identity is read from `id`/`text`, which every row of both
- * files carries; ISO codes may use the reporter or the partner spelling, because Reporters.json
- * can hold partner-shaped rows.
+ * files carries; ISO codes and the long-form note may use the reporter or the partner spelling,
+ * because Reporters.json can hold partner-shaped rows.
  */
 export const rawCountrySchema = z.object({
   id: z.number().int(),
@@ -80,6 +102,8 @@ export const rawCountrySchema = z.object({
   reporterCodeIsoAlpha3: z.string().optional(),
   PartnerCodeIsoAlpha2: z.string().optional(),
   PartnerCodeIsoAlpha3: z.string().optional(),
+  reporterNote: z.string().optional(),
+  partnerNote: z.string().optional(),
   isGroup: z.union([z.boolean(), z.string(), z.number()]).optional(),
   entryEffectiveDate: referenceDateSchema.optional(),
   entryExpiredDate: referenceDateSchema.optional(),

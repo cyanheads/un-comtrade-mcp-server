@@ -5,21 +5,28 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { goodsClassificationSchema } from '@/mcp-server/tools/comtrade-input.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
+
+/** Rejection for a query that is blank after trimming or holds no letter or digit ("-", "."). */
+const QUERY_MESSAGE =
+  'Provide a keyword or commodity code with at least one letter or digit, such as "coffee" or "0901.11".';
 
 export const searchCommoditiesTool = tool('comtrade_search_commodities', {
   title: 'Search Commodity Codes',
   description:
-    'Find HS or SITC commodity codes by keyword, partial description, or code prefix in the selected classification. Returns descriptions, native aggregation levels, parents, leaf status, and recommendedQueryCode for subsequent trade queries. HS uses levels 2 (chapter), 4 (heading), and 6 (subheading); SITC uses levels 1–5. Select the edition matching the trade records when interpreting historical codes. Each page holds up to limit matches; continue with nextOffset using the same query, classification, and aggr_level.',
+    'Find HS or SITC commodity codes by keyword, partial description, or code prefix in the selected classification; a code written with dots, spaces, or hyphens ("0901.11") matches 090111. Matches rank exact code first, then code prefix, whole-word description match, and other description matches. Returns descriptions, native aggregation levels, parents, leaf status, and recommendedQueryCode for subsequent trade queries. HS uses levels 2 (chapter), 4 (heading), and 6 (subheading); SITC uses levels 1–5. Select the edition matching the trade records when interpreting historical codes. Each page holds up to limit matches; continue with nextOffset using the same query, classification, and aggr_level.',
   annotations: { readOnlyHint: true, openWorldHint: false },
 
   input: z.object({
     query: z
       .string()
-      .min(1)
+      .trim()
+      .min(1, { error: QUERY_MESSAGE, abort: true })
+      .refine((query) => /[\p{L}\p{N}]/u.test(query), { error: QUERY_MESSAGE })
       .describe(
-        'Keyword, partial description, or commodity code prefix. Examples: "motor vehicles", "8471", "coffee", "84" (HS chapter 84 = machinery).',
+        'Keyword, partial description, or commodity code prefix. Dots, spaces, and hyphens in a code are ignored, so "0901.11" finds 090111. Examples: "motor vehicles", "8471", "coffee", "84" (HS chapter 84 = machinery).',
       ),
     classification: goodsClassificationSchema
       .default('HS')
@@ -77,7 +84,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
           .describe('A commodity entry from the selected catalog.'),
       )
       .describe(
-        'Commodity codes on this page matching the query in the selected classification, in catalog order.',
+        'Commodity codes on this page matching the query in the selected classification, ranked exact code, code prefix, whole-word description match, then other description matches; ties keep catalog order.',
       ),
     totalMatches: z.number().describe('Total matching codes across all pages.'),
     shown: z.number().describe('Number of codes returned on this page.'),
@@ -142,7 +149,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
 
     if (total === 0) {
       ctx.enrich.notice(
-        `No ${input.classification} commodity codes matched "${input.query}"${input.aggr_level ? ` at aggr_level ${input.aggr_level}` : ''}. Try a different keyword, a shorter prefix, or remove the aggr_level filter.`,
+        `No ${input.classification} commodity codes matched "${escapeMarkdownInline(input.query)}"${input.aggr_level ? ` at aggr_level ${input.aggr_level}` : ''}. Try a different keyword, a shorter prefix, or remove the aggr_level filter.`,
       );
     } else if (page.length === 0) {
       ctx.enrich.notice(

@@ -3,8 +3,14 @@
  * @module tests/tools/search-commodities.tool.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import {
+  createMockContext,
+  getEnrichment,
+  type MockContextLogger,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchCommoditiesTool } from '@/mcp-server/tools/definitions/search-commodities.tool.js';
 import {
@@ -98,6 +104,29 @@ function seedHeadings(count: number): string[] {
   return ids;
 }
 
+/** Seed HS headings whose "tea" matches are whole words and embedded ones, in catalog order. */
+function seedTeaHeadings(): void {
+  const svc = initComtradeReferenceService(mockConfig, mockStorage);
+  // @ts-expect-error — seeding private map
+  svc.hsByCode = new Map(
+    [
+      '1000 - Teapots',
+      '1001 - Green tea',
+      '1002 - Teaspoons',
+      '1003 - Tea',
+      '1004 - Steamers',
+      '1005 - Black tea leaves',
+      '1006 - Instead of tea',
+    ].map((text) => {
+      const id = text.slice(0, 4);
+      return [id, { id, text, aggrLevel: 4, isLeaf: false, recommendedQueryCode: id }];
+    }),
+  );
+}
+
+const QUERY_MESSAGE =
+  'Provide a keyword or commodity code with at least one letter or digit, such as "coffee" or "0901.11".';
+
 describe('searchCommoditiesTool', () => {
   beforeEach(() => {
     seedReferenceService();
@@ -153,6 +182,13 @@ describe('searchCommoditiesTool', () => {
     expect(result.matches).toHaveLength(0);
     expect(result.truncated).toBe(false);
     expect(getEnrichment(ctx).notice).toContain('xyzzy_nonexistent_commodity');
+  });
+
+  it('escapes Markdown in the echoed query of the no-match notice', async () => {
+    const ctx = createMockContext();
+    const input = searchCommoditiesTool.input.parse({ query: '**xyzzy**' });
+    await searchCommoditiesTool.handler(input, ctx);
+    expect(getEnrichment(ctx).notice).toContain('matched "\\*\\*xyzzy\\*\\*"');
   });
 
   it('applies limit and adds truncation notice', async () => {
@@ -358,6 +394,113 @@ describe('searchCommoditiesTool', () => {
       error: { code: JsonRpcErrorCode.InvalidParams },
     });
     expect(search).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['   ', '\t\n', ' ', '', '-', '.', ' - '])(
+    'rejects query %j, which holds no letter or digit, without searching',
+    async (query) => {
+      const search = vi.spyOn(ComtradeReferenceService.prototype, 'searchCommodityCodes');
+      const result = await runToolContract(searchCommoditiesTool, { query });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { code: JsonRpcErrorCode.InvalidParams },
+      });
+      expect(JSON.stringify(result.structuredContent)).toContain(
+        JSON.stringify(QUERY_MESSAGE).slice(1, -1),
+      );
+      // A blank query stops at the length check, so the message is reported once, not twice.
+      expect(
+        (result.structuredContent as { error: { data: { issues: unknown[] } } }).error.data.issues,
+      ).toHaveLength(1);
+      expect(contentText(result)).toContain(QUERY_MESSAGE);
+      expect(search).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['0901.', 'HS'],
+    ['09-01', 'HS'],
+    ['001X', 'S4'],
+    // A letter of any script counts, not only ASCII.
+    ['咖啡', 'HS'],
+  ])('still searches %s in %s', async (query, classification) => {
+    const search = vi
+      .spyOn(ComtradeReferenceService.prototype, 'searchCommodityCodes')
+      .mockResolvedValue([]);
+    const result = await runToolContract(searchCommoditiesTool, { query, classification });
+    expect(result.isError).not.toBe(true);
+    expect(search).toHaveBeenCalledWith(query, classification, undefined, expect.anything());
+  });
+
+  it('searches a padded query as its trimmed form', async () => {
+    const padded = await runToolContract(searchCommoditiesTool, { query: '  coffee ' });
+    const plain = await runToolContract(searchCommoditiesTool, { query: 'coffee' });
+    expect(page(padded)).toStrictEqual(page(plain));
+    expect(page(plain).matches.map((m) => m.id)).toEqual(['09']);
+  });
+
+  it('echoes the trimmed query in the no-match notice and the log', async () => {
+    const ctx = createMockContext({ errors: searchCommoditiesTool.errors });
+    await searchCommoditiesTool.handler(
+      searchCommoditiesTool.input.parse({ query: '  xyzzy\t' }),
+      ctx,
+    );
+    expect(getEnrichment(ctx).notice).toBe(
+      'No HS commodity codes matched "xyzzy". Try a different keyword, a shorter prefix, or remove the aggr_level filter.',
+    );
+    expect((ctx.log as MockContextLogger).calls).toContainEqual(
+      expect.objectContaining({
+        msg: 'comtrade_search_commodities',
+        data: expect.objectContaining({ query: 'xyzzy' }),
+      }),
+    );
+  });
+
+  it('advertises query as a non-empty string, unchanged by trimming and the refinement', () => {
+    const schema = z.toJSONSchema(searchCommoditiesTool.input, { io: 'input' });
+    expect(schema.properties?.query).toStrictEqual({
+      type: 'string',
+      minLength: 1,
+      description: expect.stringContaining('"0901.11"'),
+    });
+  });
+
+  it('finds a dotted code by its exact code through the tool on both surfaces', async () => {
+    const result = await runToolContract(searchCommoditiesTool, { query: '8471.30' });
+    expect(page(result).matches.map((m) => m.id)).toEqual(['847130']);
+    expect(contentText(result)).toContain('**847130** — Portable automatic data processing');
+  });
+
+  it('pages by nextOffset through the ranked order without overlap or gap', async () => {
+    seedTeaHeadings();
+    const ranked = ['1001', '1003', '1005', '1006', '1000', '1002', '1004'];
+    const all = page(await runToolContract(searchCommoditiesTool, { query: 'tea' }));
+    expect(all.matches.map((m) => m.id)).toEqual(ranked);
+    const walked: string[] = [];
+    let offset = 0;
+    for (;;) {
+      const result = await runToolContract(searchCommoditiesTool, {
+        query: 'tea',
+        limit: 3,
+        offset,
+      });
+      const out = page(result);
+      expect(out).toMatchObject({ offset, totalMatches: 7 });
+      expect(contentText(result).match(/\n\*\*([^*]+)\*\* — /)?.[1]).toBe(out.matches[0]?.id);
+      walked.push(...out.matches.map((m) => m.id));
+      if (out.nextOffset === undefined) break;
+      expect(out.nextOffset).toBe(offset + out.shown);
+      offset = out.nextOffset;
+    }
+    expect(walked).toEqual(ranked);
+  });
+
+  it('describes matches as ranked rather than in catalog order', () => {
+    const { description } = searchCommoditiesTool.output.shape.matches;
+    expect(description).not.toContain('in catalog order');
+    expect(description).toContain(
+      'ranked exact code, code prefix, whole-word description match, then other description matches',
+    );
   });
 
   it('formats output with code, description, level, recommendedQueryCode, and paging', () => {

@@ -3,7 +3,13 @@
  * @module tests/tools/list-service-categories.tool.test
  */
 
-import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { z } from '@cyanheads/mcp-ts-core';
+import {
+  createMockContext,
+  getEnrichment,
+  type MockContextLogger,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listServiceCategoriesTool } from '@/mcp-server/tools/definitions/list-service-categories.tool.js';
 import { initComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
@@ -146,6 +152,18 @@ describe('listServiceCategoriesTool', () => {
     const result = await listServiceCategoriesTool.handler(input, ctx);
     expect(result.totalMatches).toBe(0);
     expect(getEnrichment(ctx).notice).toContain('XYZ_MISSING');
+  });
+
+  it('escapes Markdown in the echoed query and parent code of the no-match notice', async () => {
+    const ctx = createMockContext();
+    const input = listServiceCategoriesTool.input.parse({
+      query: '**zzz**',
+      parent_code: '[x](y)',
+    });
+    await listServiceCategoriesTool.handler(input, ctx);
+    expect(getEnrichment(ctx).notice).toContain(
+      'matched "\\*\\*zzz\\*\\*" under parent "\\[x\\](y)"',
+    );
   });
 
   it('matches a lowercase EB parent code in any casing', async () => {
@@ -347,6 +365,68 @@ describe('listServiceCategoriesTool', () => {
       'No EBOPS service categories matched "zzz_nonexistent". Try a different keyword or remove the parent_code filter.';
     expect(result.structuredContent).toMatchObject({ notice });
     expect(contentText(result)).toContain(notice);
+  });
+
+  it('lists every category for a blank, empty, or omitted query', async () => {
+    const omitted = listing(await runToolContract(listServiceCategoriesTool, {}));
+    expect(omitted.totalMatches).toBe(11);
+    for (const query of ['   ', '', '\t\n']) {
+      const result = await runToolContract(listServiceCategoriesTool, { query });
+      expect(result.isError).not.toBe(true);
+      expect(listing(result)).toStrictEqual(omitted);
+      expect(result.structuredContent).not.toHaveProperty('notice');
+    }
+  });
+
+  it('echoes the trimmed query in the no-match notice and the log', async () => {
+    const ctx = createMockContext();
+    await listServiceCategoriesTool.handler(
+      listServiceCategoriesTool.input.parse({ query: ' zzz\t' }),
+      ctx,
+    );
+    expect(getEnrichment(ctx).notice).toBe(
+      'No EBOPS service categories matched "zzz". Try a different keyword or remove the parent_code filter.',
+    );
+    expect((ctx.log as MockContextLogger).calls).toContainEqual(
+      expect.objectContaining({
+        msg: 'comtrade_list_service_categories',
+        data: expect.objectContaining({ query: 'zzz' }),
+      }),
+    );
+  });
+
+  it('ranks the exact code and code prefixes first and pages through that order', async () => {
+    const ranked = ['S', 'SG', '200', '3', '3.1', '3.2', '7', '205', '260', '3a.3.1'];
+    const all = await runToolContract(listServiceCategoriesTool, { query: 's' });
+    expect(listing(all).categories.map((c) => c.id)).toEqual(ranked);
+    expect(contentText(all).match(/\n\*\*([^*]+)\*\* — /)?.[1]).toBe('S');
+    const walked: string[] = [];
+    let offset = 0;
+    for (;;) {
+      const out = listing(
+        await runToolContract(listServiceCategoriesTool, { query: 's', limit: 4, offset }),
+      );
+      expect(out).toMatchObject({ offset, totalMatches: 10 });
+      walked.push(...out.categories.map((c) => c.id));
+      if (out.nextOffset === undefined) break;
+      expect(out.nextOffset).toBe(offset + out.shown);
+      offset = out.nextOffset;
+    }
+    expect(walked).toEqual(ranked);
+  });
+
+  it('advertises query as an optional string and categories as ranked', () => {
+    const schema = z.toJSONSchema(listServiceCategoriesTool.input, { io: 'input' });
+    expect(schema.properties?.query).toStrictEqual({
+      type: 'string',
+      description: expect.stringContaining('"3.1"'),
+    });
+    expect(schema.required ?? []).not.toContain('query');
+    const { description } = listServiceCategoriesTool.output.shape.categories;
+    expect(description).not.toContain('in catalog order');
+    expect(description).toContain(
+      'ranked exact code, code prefix, whole-word description match, then other description matches',
+    );
   });
 
   it('formats output with category IDs, descriptions, parents, schemes, and paging', () => {

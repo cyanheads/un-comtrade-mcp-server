@@ -5,6 +5,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 import { EB_SCHEMES } from '@/services/comtrade-reference/types.js';
 
@@ -44,9 +45,10 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
   input: z.object({
     query: z
       .string()
+      .trim()
       .optional()
       .describe(
-        'Keyword or category code prefix to filter results. Examples: "transport", "SA", "financial services". Omit to list all EB categories.',
+        'Keyword or category code prefix to filter results; codes compare case-insensitively and keep their dots. Examples: "transport", "SA", "3.1", "financial services". Omit, or leave blank, to list all EB categories.',
       ),
     parent_code: z
       .string()
@@ -71,7 +73,9 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
   output: z.object({
     categories: z
       .array(categorySchema)
-      .describe('EB service categories on this page, in catalog order.'),
+      .describe(
+        'EB service categories on this page. With a query, ranked exact code, code prefix, whole-word description match, then other description matches; ties, and an unfiltered listing, keep catalog order.',
+      ),
     totalMatches: z.number().describe('Total matching categories across all pages.'),
     shown: z.number().describe('Number of categories returned on this page.'),
     truncated: z
@@ -143,7 +147,7 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
     }
     if (total === 0) {
       notices.push(
-        `No EBOPS service categories matched${input.query ? ` "${input.query}"` : ''}${input.parent_code ? ` under parent "${input.parent_code}"` : ''}. Try a different keyword or remove the parent_code filter.`,
+        `No EBOPS service categories matched${input.query ? ` "${escapeMarkdownInline(input.query)}"` : ''}${input.parent_code ? ` under parent "${escapeMarkdownInline(input.parent_code)}"` : ''}. Try a different keyword or remove the parent_code filter.`,
       );
     } else if (page.length === 0) {
       notices.push(

@@ -4,36 +4,37 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 export const lookupCountriesTool = tool('comtrade_lookup_countries', {
   title: 'Lookup Countries / Areas',
   description:
-    'Resolve country and area names to Comtrade M49 numeric codes used in all data queries. Accepts a partial name, full name, or ISO alpha-2/alpha-3 code (e.g. "United States", "USA", "US"). Returns matching entries with their numeric code, ISO identifiers, a validAsReporter flag, and validity dates; historical entities such as Fed. Rep. of Germany (...1990) are listed after current ones. World (code 0) is a valid partner but not a valid reporter, while some groupings, such as the European Union (97), do report — check validAsReporter. Use this before any trade data tool that requires reporter_code or partner_code. To aggregate across all partners, use partner code 0 (World) — no lookup needed.',
+    'Resolve country and area names to Comtrade M49 numeric codes used in all data queries. Accepts a partial or full name, an official name (e.g. "Republic of Korea"), a common name (e.g. "UK", "Turkey"), or an ISO alpha-2/alpha-3 code (e.g. "USA", "US"), ignoring case and accents; exact matches are listed before partial ones. Returns matching entries with their numeric code, ISO identifiers, a validAsReporter flag, and validity dates; within the exact and partial groups, historical entities such as Fed. Rep. of Germany (...1990) are listed after current ones. World (code 0) is a valid partner but not a valid reporter, while some groupings, such as the European Union (97), do report — check validAsReporter. Use this before any trade data tool that requires reporter_code or partner_code. To aggregate across all partners, use partner code 0 (World) — no lookup needed.',
   annotations: { readOnlyHint: true, openWorldHint: false },
 
   input: z.object({
     query: z
       .string()
-      .min(1)
+      .trim()
+      .min(
+        1,
+        'Enter a country or area name or an ISO alpha-2/alpha-3 code, e.g. "Germany" or "DEU".',
+      )
       .describe(
-        'Country or area name fragment, full name, or ISO alpha-2/alpha-3 code to search for. ' +
-          'Case-insensitive. Examples: "Germany", "DEU", "DE", "united states", "china".',
+        'Country or area to find: a name or name fragment, an official or common name, or an ISO alpha-2/alpha-3 code. Case, accents, and surrounding spaces are ignored. Examples: "Germany", "DEU", "DE", "south korea", "Turkiye".',
       ),
     role: z
       .enum(['reporter', 'partner', 'any'])
       .default('any')
       .describe(
-        'Filter by role: "reporter" returns only codes valid for the reporterCode parameter, ' +
-          '"partner" returns only partner areas (includes regional groupings), ' +
-          '"any" returns all matches regardless of role.',
+        'Filter by role: "reporter" returns only codes valid for reporter_code; "partner" returns only codes valid for partner_code, which include World (0) but not reporter-only groupings such as the European Union (97) and ASEAN (975); "any" returns every match.',
       ),
     include_groups: z
       .boolean()
       .default(true)
       .describe(
-        'Whether to include regional and economic groupings (e.g. EU, ASEAN). ' +
-          'Set to false to return only individual countries.',
+        'Whether to include regional and economic groupings (e.g. EU, ASEAN). Set to false to return only individual countries; a grouping listed as the code a match’s trade is published under (490 Other Asia, nes for 158 Taiwan, Province of China) is kept.',
       ),
   }),
 
@@ -46,6 +47,12 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
             name: z.string().describe('Display name of the country or area.'),
             iso3: z.string().optional().describe('ISO 3166-1 alpha-3 code, when available.'),
             iso2: z.string().optional().describe('ISO 3166-1 alpha-2 code, when available.'),
+            note: z
+              .string()
+              .optional()
+              .describe(
+                'The catalog’s long-form name or coverage note, e.g. "France, Monaco" for 251 France; a match can come from it. Absent when the catalog gives none or it repeats the name.',
+              ),
             validAsReporter: z
               .boolean()
               .describe(
@@ -72,7 +79,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
           .describe('A country or area entry with its Comtrade M49 code and identifiers.'),
       )
       .describe(
-        'Matching entries, plus entries sharing an ISO-3 code with a match, ordered by exact ISO match, reporter validity, current before expired (entryExpiredDate before today), name, then code.',
+        'Matching entries, plus entries sharing an ISO-3 code with a match and the code UN Comtrade publishes a match’s trade under (490 Other Asia, nes for 158 Taiwan, Province of China). Exact matches (a common name, ISO code, name, or official long-form name equal to the query) come before partial-name matches, and an entry a match pulls in ranks with that match. Within each rank: reporter-valid first, current before expired (entryExpiredDate before today), then name and code.',
       ),
     totalMatches: z.number().describe('Total number of matching entries.'),
   }),
@@ -82,8 +89,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
       .string()
       .optional()
       .describe(
-        'Recovery hint when no matches are found — echoes the query and suggests alternatives. ' +
-          'Absent when results are non-empty.',
+        'Recovery hint when no matches are found, echoing the query and suggesting alternatives; or, when UN Comtrade publishes a match’s trade under another code (158 Taiwan, Province of China under 490 Other Asia, nes), the code to query.',
       ),
   },
 
@@ -91,16 +97,27 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
     ctx.log.info('comtrade_lookup_countries', { query: input.query, role: input.role });
     const ref = getComtradeReferenceService();
 
-    let results = ref.searchCountries(input.query, input.role === 'any' ? undefined : input.role);
+    const matched = ref.searchCountries(input.query, input.role === 'any' ? undefined : input.role);
+    // A stand-in is the code a match's trade is published under, whatever its grouping flag.
+    const results = input.include_groups
+      ? matched
+      : matched.filter((c) => !c.isGroup || c.standsInFor !== undefined);
 
-    if (!input.include_groups) {
-      results = results.filter((c) => !c.isGroup);
-    }
+    const publishedUnder = results.flatMap(({ id, name, standsInFor }) =>
+      standsInFor
+        ? [
+            `UN Comtrade publishes the trade of ${standsInFor.id} (${escapeMarkdownInline(standsInFor.name)}) under ${id} (${escapeMarkdownInline(name)}), as reporter and as partner: query ${id} as reporter_code or partner_code.`,
+          ]
+        : [],
+    );
+    if (publishedUnder.length > 0) ctx.enrich.notice(publishedUnder.join(' '));
 
     if (results.length === 0) {
+      const query = escapeMarkdownInline(input.query);
       ctx.enrich.notice(
-        `No countries or areas matched "${input.query}" with role="${input.role}". ` +
-          `Try a shorter name fragment, check the spelling, or use an ISO code (e.g. "USA" or "US").`,
+        matched.length > 0
+          ? `Only groupings matched "${query}" with role="${input.role}"; include_groups is false, so they are left out. Retry with include_groups true to list them.`
+          : `No countries or areas matched "${query}" with role="${input.role}". Try a shorter name fragment, check the spelling, or use an ISO code (e.g. "USA" or "US").`,
       );
       return {
         matches: [],
@@ -114,6 +131,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
         name: c.name,
         ...(c.iso3 && { iso3: c.iso3 }),
         ...(c.iso2 && { iso2: c.iso2 }),
+        ...(c.note && { note: c.note }),
         validAsReporter: c.validAsReporter,
         isGroup: c.isGroup,
         ...(c.entryEffectiveDate && { entryEffectiveDate: c.entryEffectiveDate }),
@@ -140,7 +158,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
           ? `valid from ${c.entryEffectiveDate}`
           : undefined;
       lines.push(
-        `\n**${c.name}** (code: ${c.id})${codes ? ` | ${codes}` : ''} | ${tags}${validity ? ` | ${validity}` : ''}`,
+        `\n**${c.name}** (code: ${c.id})${codes ? ` | ${codes}` : ''} | ${tags}${validity ? ` | ${validity}` : ''}${c.note ? ` | note: ${escapeMarkdownInline(c.note)}` : ''}`,
       );
     }
     return [{ type: 'text', text: lines.join('\n') }];
