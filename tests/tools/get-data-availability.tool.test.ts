@@ -274,7 +274,22 @@ describe('getDataAvailabilityTool partner-only reporters', () => {
   const statuses = new Map<number, ReporterStatus>([
     [
       250,
-      { referenceStatus: 'partner_only', name: 'Metropolitan France', suggestedReporterCode: 251 },
+      {
+        referenceStatus: 'partner_only',
+        name: 'Metropolitan France',
+        suggestedReporterCode: 251,
+        suggestionBasis: 'iso3',
+      },
+    ],
+    [
+      158,
+      {
+        referenceStatus: 'partner_only',
+        name: 'Taiwan, Province of China',
+        suggestedReporterCode: 490,
+        suggestionBasis: 'published_under',
+        suggestedReporterName: 'Other Asia, nes',
+      },
     ],
     [0, { referenceStatus: 'partner_only', name: 'World' }],
   ]);
@@ -292,6 +307,10 @@ describe('getDataAvailabilityTool partner-only reporters', () => {
     [
       250,
       'No data availability records found for reporter 250, period 2022. Reporter 250 (Metropolitan France) is a partner-only code in UN Comtrade reference data; reporter 251 shares its ISO-3 identity. Retry with reporter_code 251.',
+    ],
+    [
+      158,
+      'No data availability records found for reporter 158, period 2022. Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.',
     ],
     [
       0,

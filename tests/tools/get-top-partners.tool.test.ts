@@ -115,8 +115,24 @@ describe('getTopPartnersTool', () => {
   it.each([
     [
       250,
-      { referenceStatus: 'partner_only', name: 'Metropolitan France', suggestedReporterCode: 251 },
+      {
+        referenceStatus: 'partner_only',
+        name: 'Metropolitan France',
+        suggestedReporterCode: 251,
+        suggestionBasis: 'iso3',
+      },
       'Reporter 250 (Metropolitan France) is a partner-only code in UN Comtrade reference data; reporter 251 shares its ISO-3 identity. Retry with reporter_code 251.',
+    ],
+    [
+      158,
+      {
+        referenceStatus: 'partner_only',
+        name: 'Taiwan, Province of China',
+        suggestedReporterCode: 490,
+        suggestionBasis: 'published_under',
+        suggestedReporterName: 'Other Asia, nes',
+      },
+      'Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.',
     ],
     [
       0,
@@ -212,6 +228,33 @@ describe('getTopPartnersTool', () => {
     });
     expect(JSON.stringify(result.content)).toContain(String(declared?.recovery));
     expect(JSON.stringify(result)).not.toContain('fewer periods');
+  });
+
+  it('answers a ranking UN Comtrade kept failing with upstream_unavailable and its wait, without a period lever', async () => {
+    fetchMock.mockRejectedValue(
+      periodFailureError([{ period: '2022', reason: 'upstream_unavailable', status: 503 }]),
+    );
+    const result = await runToolContract(getTopPartnersTool, args);
+    const hint = 'Wait a minute and retry the same call.';
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        message:
+          'No requested period was served. Period 2022 failed: UN Comtrade answered HTTP 503 after retries.',
+        data: { reason: 'upstream_unavailable', retryable: true, recovery: { hint } },
+      },
+    });
+    expect(JSON.stringify(result.content)).toContain(hint);
+    expect(JSON.stringify(result)).not.toContain('fewer periods');
+    expect(getTopPartnersTool.errors).toContainEqual(
+      expect.objectContaining({
+        reason: 'upstream_unavailable',
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        retryable: true,
+        thrownBy: 'service',
+      }),
+    );
   });
 
   it('ranks partners by descending trade value', async () => {

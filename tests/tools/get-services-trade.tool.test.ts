@@ -16,6 +16,7 @@ import {
   ComtradeReferenceService,
   initComtradeReferenceService,
 } from '@/services/comtrade-reference/comtrade-reference-service.js';
+import type { ReporterStatus } from '@/services/comtrade-reference/types.js';
 
 const mockConfig = {} as Parameters<typeof initComtradeDataService>[0];
 const mockStorage = {} as Parameters<typeof initComtradeDataService>[1];
@@ -358,9 +359,22 @@ describe('getServicesTradeTool', () => {
         referenceStatus: 'partner_only',
         name: 'Metropolitan France',
         suggestedReporterCode: 251,
+        suggestionBasis: 'iso3',
       },
       sentence:
         'Reporter 250 (Metropolitan France) is a partner-only code in UN Comtrade reference data; reporter 251 shares its ISO-3 identity. Retry with reporter_code 251.',
+    },
+    {
+      reporter_code: 158,
+      status: {
+        referenceStatus: 'partner_only',
+        name: 'Taiwan, Province of China',
+        suggestedReporterCode: 490,
+        suggestionBasis: 'published_under',
+        suggestedReporterName: 'Other Asia, nes',
+      },
+      sentence:
+        'Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.',
     },
     {
       reporter_code: 0,
@@ -376,7 +390,11 @@ describe('getServicesTradeTool', () => {
   ] as const)(
     'ends the empty notice for reporter $reporter_code with its reference status',
     async ({ reporter_code, status, sentence }) => {
-      vi.spyOn(ComtradeReferenceService.prototype, 'getReporterStatus').mockReturnValue(status);
+      // Keyed by code: the tool also classifies partner_code 0, which has no counterpart.
+      vi.spyOn(ComtradeReferenceService.prototype, 'getReporterStatus').mockImplementation(
+        (code) =>
+          code === reporter_code ? status : { referenceStatus: 'partner_only', name: 'World' },
+      );
       fetchMock.mockResolvedValue({ records: [], totalCount: 0, truncated: false });
       const result = await runToolContract(getServicesTradeTool, {
         reporter_code,
@@ -414,6 +432,43 @@ describe('getServicesTradeTool', () => {
     });
     expect(result.structuredContent).toMatchObject({ shown: 1 });
     expect(result.structuredContent).not.toHaveProperty('notice');
+  });
+
+  it('ends the empty notice for partner 158 with the partner code its trade is published under', async () => {
+    const statuses = new Map<number, ReporterStatus>([
+      [842, { referenceStatus: 'reporter', name: 'USA' }],
+      [
+        158,
+        {
+          referenceStatus: 'partner_only',
+          name: 'Taiwan, Province of China',
+          suggestedReporterCode: 490,
+          suggestionBasis: 'published_under',
+          suggestedReporterName: 'Other Asia, nes',
+        },
+      ],
+    ]);
+    vi.spyOn(ComtradeReferenceService.prototype, 'getReporterStatus').mockImplementation(
+      (code) => statuses.get(code) ?? { referenceStatus: 'unknown' },
+    );
+    fetchMock.mockResolvedValue({ records: [], totalCount: 0, truncated: false });
+    const result = await runToolContract(getServicesTradeTool, {
+      reporter_code: 842,
+      flow_code: 'X',
+      period: ['2022'],
+      partner_code: 158,
+      service_code: '7',
+    });
+    const expected =
+      'No services trade records found for reporter 842, flow=X, periods=[2022]. UN Comtrade publishes the trade of partner 158 (Taiwan, Province of China) under 490 (Other Asia, nes). Retry with partner_code 490.';
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ partnerCode: 158 }),
+      expect.anything(),
+      expect.any(Number),
+    );
+    expect(result.structuredContent).toMatchObject({ records: [], notice: expected });
+    expect(textOf(result)).toContain(`> ${expected}`);
+    expect(catalogFetch).not.toHaveBeenCalled();
   });
 
   it('joins a period failure, the EB10 conversion note, and the scheme into one notice', async () => {
@@ -560,6 +615,28 @@ describe('getServicesTradeTool', () => {
     expect(text).toContain(`> ${notice}`);
     expect(text).not.toContain('No services trade records found');
   });
+
+  const eightPeriods = Array.from({ length: 8 }, (_, i) => String(2016 + i));
+  it.each([
+    ['inside the cap', ['2016', ...eightPeriods]],
+    ['past the cap', [...eightPeriods, '2016']],
+  ])(
+    'deduplicates periods before the keyless period cap, a repeat %s taking no slot',
+    async (_label, period) => {
+      const result = await runToolContract(getServicesTradeTool, {
+        reporter_code: 840,
+        flow_code: 'X',
+        period,
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.objectContaining({ period: eightPeriods.join(',') }),
+        expect.anything(),
+        expect.any(Number),
+      );
+      expect(result.structuredContent).not.toHaveProperty('unservedPeriods');
+      expect(textOf(result)).not.toContain('Unserved periods');
+    },
+  );
 
   it('joins the failure notice with the empty-result notice, which names only answered periods', async () => {
     fetchMock.mockResolvedValue({
@@ -711,7 +788,50 @@ describe('getServicesTradeTool on the keyless data service', () => {
     ]);
     expect(textOf(result)).toContain('Original classification: No (converted by UN Comtrade)');
   });
+  it('serves the periods around one UN Comtrade cannot be reached for, naming it on both surfaces', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname !== 'comtradeapi.un.org' || url.pathname !== '/public/v1/preview/S/A/EB')
+        throw new Error(`Unexpected fetch ${url.pathname}`);
+      const period = url.searchParams.get('period') ?? '';
+      if (period === '2022')
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('connect ECONNREFUSED 10.0.0.7:443'), {
+            code: 'ECONNREFUSED',
+          }),
+        });
+      return Response.json({
+        data: [{ reporterCode: 842, partnerCode: 0, flowCode: 'X', cmdCode: 'S', period }],
+      });
+    });
+    const run = runToolContract(getServicesTradeTool, {
+      reporter_code: 842,
+      flow_code: 'X',
+      period: ['2021', '2022', '2023'],
+      partner_code: 0,
+    });
+    await vi.runAllTimersAsync();
+    const result = await run;
+    const notice = 'Period 2022 failed: UN Comtrade could not be reached after retries.';
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ shown: 2, unservedPeriods: ['2022'], notice });
+    const text = textOf(result);
+    expect(text).toContain('**Unserved periods:** 2022. Query them separately.');
+    expect(text).toContain(`> ${notice}`);
+    for (const leak of ['ECONNREFUSED', '10.0.0.7', 'comtradeapi.un.org'])
+      expect(JSON.stringify(result)).not.toContain(leak);
+    // 2021 once, 2022 through its four attempts, then 2023.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
   it.each([
+    {
+      reason: 'upstream_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      respond: async () => new Response('gateway timeout', { status: 504 }),
+      message:
+        'No requested period was served. Period 2022 failed: UN Comtrade answered HTTP 504 after retries.',
+      data: { recovery: { hint: 'Wait a minute and retry the same call.' } },
+    },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
@@ -765,6 +885,9 @@ describe('getServicesTradeTool on the keyless data service', () => {
       expect(text).toContain(message);
       expect(text).toContain(data.recovery.hint);
       expect(text).toContain(`reason ${reason}`);
+      expect(getServicesTradeTool.errors).toContainEqual(
+        expect.objectContaining({ reason, code, retryable: true, thrownBy: 'service' }),
+      );
     },
   );
 });

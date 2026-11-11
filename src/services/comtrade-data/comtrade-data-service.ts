@@ -94,16 +94,30 @@ function malformedResponse(): McpError {
   );
 }
 
+/** The HTTP status UN Comtrade answered, on an error `fetchWithTimeout` built from that answer. */
+function answeredStatus(error: unknown): number | undefined {
+  const status = error instanceof McpError ? error.data?.status : undefined;
+  return typeof status === 'number' ? status : undefined;
+}
+
 /**
  * Why a period's request failed transiently, or undefined for a failure that fails the call
- * (upstream validation, malformed data, cancellation). A pacer shed means no preview slot opened
- * before the call's deadline: every start's wait budget is the time left, which binds long
- * before the 48-deep queue fills at 4 s spacing.
+ * (upstream validation, a 501, malformed data, cancellation). A pacer shed means no preview slot
+ * opened before the call's deadline: every start's wait budget is the time left, which binds long
+ * before the 48-deep queue fills at 4 s spacing. The answered status is read before the error
+ * code because a 504 maps to `Timeout`; a deadline that cuts a request, its body read included,
+ * leaves no status.
  */
 function periodFailureReason(error: unknown): TradePeriodFailureReason | undefined {
   if (error instanceof McpError) {
     if (error.code === JsonRpcErrorCode.RateLimited)
       return error.data?.reason === 'pacer_shed' ? 'deadline_exceeded' : 'rate_limited';
+    const status = answeredStatus(error);
+    if (
+      (status !== undefined && status >= 500 && status <= 599 && status !== 501) ||
+      error.data?.errorSource === 'FetchNetworkErrorWrapper'
+    )
+      return 'upstream_unavailable';
     return error.code === JsonRpcErrorCode.Timeout ? 'deadline_exceeded' : undefined;
   }
   return error instanceof Error && error.name === 'TimeoutError' ? 'deadline_exceeded' : undefined;
@@ -124,49 +138,102 @@ function periodsPhrase(periods: string[]): string {
   return periods.length === 1 ? `Period ${periods[0]} was` : `Periods ${periods.join(', ')} were`;
 }
 
-/** Failures deduplicated by period, a rate limit outranking a deadline for the same period. */
-function groupFailures(failures: readonly TradePeriodFailure[]) {
-  const limited = new Map<string, TradePeriodFailure>();
-  const late = new Set<string>();
-  for (const failure of failures) {
-    if (failure.reason === 'rate_limited') {
-      const known = limited.get(failure.period);
-      limited.set(
-        failure.period,
-        known && (known.retryAfterSeconds ?? 0) >= (failure.retryAfterSeconds ?? 0)
-          ? known
-          : failure,
-      );
-    } else late.add(failure.period);
-  }
-  for (const period of limited.keys()) late.delete(period);
-  return { limited: [...limited.values()], late: [...late] };
+const FAILURE_RANK = {
+  rate_limited: 0,
+  upstream_unavailable: 1,
+  deadline_exceeded: 2,
+} as const satisfies Record<TradePeriodFailureReason, number>;
+
+/** Whether `failure` replaces `known` as its period's record: a higher-ranked reason, or a longer stated rate-limit wait. */
+function outranks(failure: TradePeriodFailure, known: TradePeriodFailure): boolean {
+  const rank = FAILURE_RANK[failure.reason] - FAILURE_RANK[known.reason];
+  return (
+    rank < 0 ||
+    (rank === 0 &&
+      failure.reason === 'rate_limited' &&
+      (failure.retryAfterSeconds ?? 0) > (known.retryAfterSeconds ?? 0))
+  );
 }
 
-/** One sentence per failure reason naming the unserved periods and, for rate limits, the wait. */
+/**
+ * Failures deduplicated by period: `rate_limited` > `upstream_unavailable` > `deadline_exceeded`
+ * for the same period, the longest stated wait among its rate limits, otherwise its first
+ * failure. Each reason lists its periods in the order they first failed for that reason.
+ */
+function groupFailures(failures: readonly TradePeriodFailure[]) {
+  const records = new Map<string, TradePeriodFailure>();
+  for (const failure of failures) {
+    const known = records.get(failure.period);
+    if (!known || outranks(failure, known)) records.set(failure.period, failure);
+  }
+  const ranked = (reason: TradePeriodFailureReason) =>
+    [...new Set(failures.filter((f) => f.reason === reason).map((f) => f.period))].flatMap(
+      (period) => {
+        const record = records.get(period);
+        return record?.reason === reason ? [record] : [];
+      },
+    );
+  return {
+    limited: ranked('rate_limited'),
+    unavailable: ranked('upstream_unavailable'),
+    late: ranked('deadline_exceeded').map((f) => f.period),
+  };
+}
+
+/**
+ * One sentence per failure reason naming the unserved periods: for rate limits the wait, for
+ * server errors the HTTP status (one sentence per status) or that UN Comtrade could not be reached.
+ */
 export function describePeriodFailures(failures: readonly TradePeriodFailure[]): string {
-  const { limited, late } = groupFailures(failures);
+  const { limited, unavailable, late } = groupFailures(failures);
   const sentences: string[] = [];
   if (limited.length > 0)
     sentences.push(
       `${periodsPhrase(limited.map((f) => f.period))} rate-limited; wait ${failureWaitSeconds(limited)} seconds before requesting ${limited.length === 1 ? 'it' : 'them'} again.`,
+    );
+  for (const [status, group] of Map.groupBy(unavailable, (f) => f.status))
+    sentences.push(
+      `${group.length === 1 ? 'Period' : 'Periods'} ${group.map((f) => f.period).join(', ')} failed: UN Comtrade ${status === undefined ? 'could not be reached' : `answered HTTP ${status}`} after retries.`,
     );
   if (late.length > 0)
     sentences.push(`${periodsPhrase(late)} not completed within the call's time budget.`);
   return sentences.join(' ');
 }
 
+/** The failures each `periodFailureError` was built from, kept off the error's wire `data`. */
+const failuresByError = new WeakMap<McpError, readonly TradePeriodFailure[]>();
+
 /**
- * The error for a call that served no period with data: `rate_limited` (RateLimited, `retryAfter`
- * in seconds) when any period was rate limited, otherwise `deadline_exceeded` (Timeout). `lead`
- * replaces the opening sentence when some periods were served but held no data.
+ * The period failures behind an error `periodFailureError` built, so a caller that makes several
+ * `fetchTradeData` calls can rank them together; undefined for an error that fails the call.
+ */
+export function periodFailuresOf(error: unknown): readonly TradePeriodFailure[] | undefined {
+  return error instanceof McpError ? failuresByError.get(error) : undefined;
+}
+
+/**
+ * The error for a call that served no period with data, ranked as `groupFailures` ranks a
+ * period: `rate_limited` (RateLimited, `retryAfter` in seconds) when any period was rate limited,
+ * else `upstream_unavailable` (ServiceUnavailable) when any period met a server error or no
+ * connection, otherwise `deadline_exceeded` (Timeout). `lead` replaces the opening sentence when
+ * some periods were served but held no data. The message names periods and HTTP statuses only;
+ * nothing else UN Comtrade sent reaches it or `data`. `periodFailuresOf` returns `failures`.
  */
 export function periodFailureError(
   failures: readonly TradePeriodFailure[],
-  { lead = 'No requested period was served.', ...options }: { cause?: unknown; lead?: string } = {},
+  options: { cause?: unknown; lead?: string } = {},
+): McpError {
+  const error = rankedPeriodFailureError(failures, options);
+  failuresByError.set(error, failures);
+  return error;
+}
+
+function rankedPeriodFailureError(
+  failures: readonly TradePeriodFailure[],
+  { lead = 'No requested period was served.', ...options }: { cause?: unknown; lead?: string },
 ): McpError {
   const message = `${lead} ${describePeriodFailures(failures)}`;
-  const { limited } = groupFailures(failures);
+  const { limited, unavailable } = groupFailures(failures);
   if (limited.length > 0) {
     const retryAfter = failureWaitSeconds(limited);
     return new McpError(
@@ -177,6 +244,27 @@ export function periodFailureError(
         retryable: true,
         retryAfter,
         recovery: { hint: `Wait ${retryAfter} seconds, then retry with fewer periods.` },
+      },
+      options,
+    );
+  }
+  // Fewer periods do not help here, and a single-period ranking rethrows this hint unchanged. A
+  // stated wait past a minute is one `withRetry` declined to sit out, so the caller gets it.
+  if (unavailable.length > 0) {
+    const statedWait = Math.max(0, ...unavailable.map((f) => f.retryAfterSeconds ?? 0));
+    return new McpError(
+      JsonRpcErrorCode.ServiceUnavailable,
+      message,
+      {
+        reason: 'upstream_unavailable',
+        retryable: true,
+        ...(statedWait > 60 && { retryAfter: statedWait }),
+        recovery: {
+          hint:
+            statedWait > 60
+              ? `Wait ${statedWait} seconds and retry the same call.`
+              : 'Wait a minute and retry the same call.',
+        },
       },
       options,
     );
@@ -235,11 +323,13 @@ export class ComtradeDataService {
 
   /**
    * Fetch trade data records through the authenticated endpoint or, keyless, one paced preview
-   * request per period. Periods whose requests are rate limited or run out of time come back in
-   * `failedPeriods` beside the completed ones; when none completes, throws `periodFailureError`.
-   * Upstream validation (400), malformed responses, and cancellation fail the call.
-   * `deadlineAt` (epoch ms) bounds every attempt, backoff, and queued start; a caller making
-   * several calls for one tool call passes the same value to each.
+   * request per period. Periods whose requests are rate limited, end in a 5xx other than 501 or a
+   * network failure after their retries, or run out of time come back in `failedPeriods` beside
+   * the completed ones, and later periods are still requested; when none completes, throws
+   * `periodFailureError`. An authenticated call sends every period in one request, so any such
+   * failure throws. Upstream validation (400), a 501, malformed responses, and cancellation fail
+   * the call. `deadlineAt` (epoch ms) bounds every attempt, backoff, and queued start; a caller
+   * making several calls for one tool call passes the same value to each.
    */
   async fetchTradeData(
     params: TradeDataParams,
@@ -295,9 +385,11 @@ export class ComtradeDataService {
             const reason = periodFailureReason(error);
             if (!reason) throw error;
             const retryAfter = retryAfterSeconds(error);
+            const status = reason === 'upstream_unavailable' ? answeredStatus(error) : undefined;
             failure = {
               reason,
               ...(retryAfter !== undefined && { retryAfterSeconds: retryAfter }),
+              ...(status !== undefined && { status }),
             };
             lastError = error;
           }
@@ -598,9 +690,7 @@ export class ComtradeDataService {
       ...(referenceNotice && { referenceNotice }),
       ...(truncated && {
         truncationHint:
-          'A public preview response reached 500 records and may be incomplete. ' +
-          'Narrow the query by commodity code, partner, or period. ' +
-          'COMTRADE_SUBSCRIPTION_KEY selects authenticated access; retrieval limits depend on UN Comtrade and the subscription.',
+          'A public preview response reached 500 records and may be incomplete. Narrow the query by commodity code, partner, or period. COMTRADE_SUBSCRIPTION_KEY selects authenticated access; retrieval limits depend on UN Comtrade and the subscription.',
       }),
     };
   }

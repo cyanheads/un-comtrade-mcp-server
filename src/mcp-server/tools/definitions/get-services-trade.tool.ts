@@ -13,7 +13,7 @@ import {
   m49Schema,
   servicesClassificationSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
-import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
+import { counterpartNotices } from '@/mcp-server/tools/reporter-notice.js';
 import {
   describePeriodFailures,
   getComtradeDataService,
@@ -62,13 +62,18 @@ async function serviceCodeSchemes(
 }
 
 /**
- * Why a services query returned no rows. A partner-only reporter code ends it with the
- * reporter-valid code sharing its identity. Otherwise it explains a converted series, names the
- * requested code's EB scheme, and routes to availability under EB, where each period shows the
- * scheme it was reported in.
+ * Why a services query returned no rows. A partner-only reporter code, or a partner code with a
+ * reporter-valid counterpart, ends it with the code to query instead. Otherwise it explains a
+ * converted series, names the requested code's EB scheme, and routes to availability under EB,
+ * where each period shows the scheme it was reported in.
  */
 async function emptyResultNotice(
-  input: { reporter_code: number; flow_code: string; service_code?: string | undefined },
+  input: {
+    reporter_code: number;
+    flow_code: string;
+    partner_code?: number | undefined;
+    service_code?: string | undefined;
+  },
   classification: ServicesClassification,
   servedPeriods: readonly string[],
   signal: AbortSignal,
@@ -77,11 +82,12 @@ async function emptyResultNotice(
   const sentences = [
     `No services trade records found for reporter ${input.reporter_code}, flow=${input.flow_code}, periods=[${servedPeriods.join(', ')}].`,
   ];
-  const partnerOnly = partnerOnlyReporterNotice(
+  const counterparts = counterpartNotices(
+    getComtradeReferenceService(),
     input.reporter_code,
-    getComtradeReferenceService().getReporterStatus(input.reporter_code),
+    input.partner_code,
   );
-  if (partnerOnly) return [...sentences, partnerOnly].join(' ');
+  if (counterparts.length > 0) return [...sentences, ...counterparts].join(' ');
   if (classification !== 'EB')
     sentences.push(
       `${classification} serves UN Comtrade's conversions from other schemes; rows reported in ${classification} itself are served under classification "EB".`,
@@ -173,6 +179,14 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       thrownBy: 'service',
     },
     {
+      reason: 'upstream_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'No requested period completed and at least one request failed on a UN Comtrade server error or network failure after retries.',
+      recovery: 'Wait a minute and retry the same call.',
+      retryable: true,
+      thrownBy: 'service',
+    },
+    {
       reason: 'deadline_exceeded',
       code: JsonRpcErrorCode.Timeout,
       when: "No served period completed within the call's time budget.",
@@ -191,13 +205,12 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       .min(1)
       .max(120)
       .describe(
-        'Annual periods YYYY. Serves the first 8 keyless (12 with authenticated access); the rest, and any period whose request is rate limited or runs out of time, are listed in unservedPeriods. Input ceiling 120.',
+        'Annual periods YYYY. Serves the first 8 distinct periods keyless (12 with authenticated access); the rest, and any period whose request is rate limited, fails on a UN Comtrade server error or network failure, or runs out of time, are listed in unservedPeriods. Input ceiling 120.',
       ),
     partner_code: m49Schema
       .optional()
       .describe(
-        'M49 partner code. Use 0 for all partners combined. ' +
-          'Omit for a disaggregated by-partner breakdown.',
+        'M49 partner code. Use 0 for all partners combined. Omit for a disaggregated by-partner breakdown.',
       ),
     service_code: codeSchema
       .optional()
@@ -235,13 +248,13 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       .array(z.string())
       .optional()
       .describe(
-        'Periods not served: past the period cap (8 keyless, 12 authenticated) or whose requests were rate limited or ran out of time; query them separately.',
+        'Periods not served: past the period cap (8 keyless, 12 authenticated) or whose requests were rate limited, failed on a UN Comtrade server error or network failure, or ran out of time; query them separately.',
       ),
     notice: z
       .string()
       .optional()
       .describe(
-        "Why data is missing: periods that were rate limited (with the wait) or ran out of time, and, when no records are returned, the requested code's EB scheme or a partner-only reporter's counterpart, with the next call to make.",
+        "Why data is missing: periods that were rate limited (with the wait), failed on a UN Comtrade server error (with the HTTP status) or network failure, or ran out of time, and, when no records are returned, the requested code's EB scheme or the code to query instead of a partner-only reporter_code (250 → 251, 158 → 490) or of a partner_code with a reporter-valid counterpart (840 → 842, 158 → 490), with the next call to make.",
       ),
   },
 
@@ -264,7 +277,9 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
 
     const svc = getComtradeDataService();
     const periodCap = svc.periodsPerCall(1);
-    const periods = input.period.slice(0, periodCap);
+    // Repeats are dropped before the cap, so they take no slot and a served period is never listed unserved.
+    const requestedPeriods = [...new Set(input.period)];
+    const periods = requestedPeriods.slice(0, periodCap);
     const result = await svc.fetchTradeData(
       {
         reporterCode: input.reporter_code,
@@ -282,8 +297,8 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     if (result.referenceNotice) ctx.enrich({ referenceNotice: result.referenceNotice });
     const failed = new Set(result.failedPeriods?.map((failure) => failure.period));
     const unservedPeriods = [
-      ...[...new Set(periods)].filter((period) => failed.has(period)),
-      ...input.period.slice(periodCap),
+      ...periods.filter((period) => failed.has(period)),
+      ...requestedPeriods.slice(periodCap),
     ];
     if (unservedPeriods.length > 0) ctx.enrich({ unservedPeriods });
 

@@ -73,6 +73,24 @@ function useCatalog(codes: string[], aggrLevel: 2 | 4) {
   );
 }
 
+/** Every text block of a tool result, as one string. */
+function textOf(result: Awaited<ReturnType<typeof runToolContract>>): string {
+  return (result.content ?? []).map((block) => (block as { text: string }).text).join('\n');
+}
+
+/** Rows at `aggrLevel` for `[cmdCode, value, description]` triples. */
+function rowsOf(rows: [string, number | null, string][], aggrLevel: 2 | 4) {
+  return rows.map(([cmdCode, primaryValue, cmdDesc]) => ({
+    ...COMMODITY_RECORDS[0],
+    cmdCode,
+    cmdDesc,
+    primaryValue,
+    aggrLevel,
+  }));
+}
+
+const RESIDUAL_DESC = 'Commodities not specified according to kind';
+
 describe('getTopCommoditiesTool', () => {
   let fetchMock: ReturnType<typeof vi.spyOn>;
 
@@ -256,8 +274,24 @@ describe('getTopCommoditiesTool', () => {
   it.each([
     [
       250,
-      { referenceStatus: 'partner_only', name: 'Metropolitan France', suggestedReporterCode: 251 },
+      {
+        referenceStatus: 'partner_only',
+        name: 'Metropolitan France',
+        suggestedReporterCode: 251,
+        suggestionBasis: 'iso3',
+      },
       'Reporter 250 (Metropolitan France) is a partner-only code in UN Comtrade reference data; reporter 251 shares its ISO-3 identity. Retry with reporter_code 251.',
+    ],
+    [
+      158,
+      {
+        referenceStatus: 'partner_only',
+        name: 'Taiwan, Province of China',
+        suggestedReporterCode: 490,
+        suggestionBasis: 'published_under',
+        suggestedReporterName: 'Other Asia, nes',
+      },
+      'Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.',
     ],
     [
       0,
@@ -302,6 +336,31 @@ describe('getTopCommoditiesTool', () => {
       expect(fetchMock.mock.calls.map(([params]) => params.cmdCode)).toEqual(['TOTAL']);
     },
   );
+
+  it('ends the empty notice for partner 158 with the partner code its trade is published under', async () => {
+    fetchMock.mockResolvedValue({ records: [], totalCount: 0, truncated: false });
+    vi.spyOn(ComtradeReferenceService.prototype, 'getReporterStatus').mockImplementation((code) =>
+      code === 158
+        ? {
+            referenceStatus: 'partner_only',
+            name: 'Taiwan, Province of China',
+            suggestedReporterCode: 490,
+            suggestionBasis: 'published_under',
+            suggestedReporterName: 'Other Asia, nes',
+          }
+        : { referenceStatus: 'reporter', name: 'USA' },
+    );
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      reporter_code: 842,
+      partner_code: 158,
+    });
+    const notice =
+      'No commodity data found for reporter 842, flow=X, period=2022. UN Comtrade publishes the trade of partner 158 (Taiwan, Province of China) under 490 (Other Asia, nes). Retry with partner_code 490.';
+    expect(fetchMock.mock.calls[0]?.[0]).toMatchObject({ partnerCode: 158 });
+    expect(result.structuredContent).toMatchObject({ commodities: [], notice });
+    expect(JSON.stringify(result.content)).toContain(JSON.stringify(notice).slice(1, -1));
+  });
 
   it('keeps the aggregate fallback when upstream TOTAL rows hold no aggregate row', async () => {
     fetchMock.mockImplementation(async (params) => ({
@@ -450,6 +509,46 @@ describe('getTopCommoditiesTool', () => {
     expect(JSON.stringify(result)).not.toContain('fewer periods');
     // TOTAL's failure falls back to the aggregate selector, whose failure ends the call.
     expect(fetchMock.mock.calls.map(([params]) => params.cmdCode)).toEqual(['TOTAL', 'AG2']);
+  });
+
+  it('carries the declared upstream_unavailable recovery when the aggregate fallback hits a server error', async () => {
+    fetchMock.mockRejectedValue(
+      new McpError(JsonRpcErrorCode.ServiceUnavailable, 'UN Comtrade answered 503 for 2022.', {
+        reason: 'upstream_unavailable',
+        retryable: true,
+      }),
+    );
+    const hint = getTopCommoditiesTool.errors?.find(
+      (e) => e.reason === 'upstream_unavailable',
+    )?.recovery;
+    const result = await runToolContract(getTopCommoditiesTool, args);
+    expect(hint).toEqual(expect.any(String));
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        data: { reason: 'upstream_unavailable', recovery: { hint } },
+      },
+    });
+    expect(textOf(result)).toContain(hint);
+    expect(fetchMock.mock.calls.map(([params]) => params.cmdCode)).toEqual(['TOTAL', 'AG2']);
+  });
+
+  it("passes the data service's upstream_unavailable failure through without a period count", async () => {
+    fetchMock.mockRejectedValue(
+      periodFailureError([{ period: '2022', reason: 'upstream_unavailable' }]),
+    );
+    const result = await runToolContract(getTopCommoditiesTool, args);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        data: {
+          reason: 'upstream_unavailable',
+          retryable: true,
+          recovery: { hint: expect.any(String) },
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('fewer periods');
   });
 
   it.each([-1, 99999, 1.5])('rejects M49 code %d for reporter and partner before work', (code) => {
@@ -795,5 +894,170 @@ describe('getTopCommoditiesTool', () => {
     expect(result.classificationCode).toBeUndefined();
     expect(result.commodities[0]?.rank).toBeUndefined();
     expect(result.commodities[0]?.sharePercent).toBeUndefined();
+  });
+
+  it('marks residual heading 9999 ranked first on both surfaces, keeping ranks, shares and totals', async () => {
+    useCatalog(['2709', '8703', '9999'], 4);
+    fetchMock.mockImplementation(async (params) => ({
+      records:
+        params.cmdCode === 'TOTAL'
+          ? [{ ...COMMODITY_RECORDS[2], classificationCode: 'H6', primaryValue: 1_000_000_000 }]
+          : rowsOf(
+              [
+                ['9999', 500_000_000, RESIDUAL_DESC],
+                ['2709', 300_000_000, 'Petroleum oils, crude'],
+                ['8703', 200_000_000, 'Motor cars'],
+              ],
+              4,
+            ),
+      totalCount: 3,
+      truncated: false,
+    }));
+    const result = await runToolContract(getTopCommoditiesTool, { ...args, aggr_level: 4 });
+    const notice =
+      'Code 9999 (500,000,000 USD, 50% of matching TOTAL) holds trade not allocated to a heading, not a product category; that includes chapter-level trade the reporter withholds from headings, so 9999 can exceed chapter 99.';
+    expect(result.structuredContent).toMatchObject({
+      commodities: [
+        {
+          rank: 1,
+          cmdCode: '9999',
+          residual: true,
+          primaryValueUsd: 500_000_000,
+          sharePercent: 50,
+        },
+        { rank: 2, cmdCode: '2709', primaryValueUsd: 300_000_000, sharePercent: 30 },
+        { rank: 3, cmdCode: '8703', primaryValueUsd: 200_000_000, sharePercent: 20 },
+      ],
+      totalCommodities: 3,
+      totalValueUsd: 1_000_000_000,
+      denominatorValueUsd: 1_000_000_000,
+      coverageComplete: true,
+      notice,
+    });
+    const { commodities } = getTopCommoditiesTool.output.parse(result.structuredContent);
+    for (const row of commodities.slice(1)) expect(row).not.toHaveProperty('residual');
+    const text = textOf(result);
+    expect(text).toContain(
+      `**#1. 9999** (aggrLevel: 4) — ${RESIDUAL_DESC}\n  Residual: true\n  Value: $500,000,000 USD\n  Share: 50%`,
+    );
+    expect(text.match(/Residual: true/g)).toHaveLength(1);
+    expect(text).toContain(`> ${notice}`);
+  });
+
+  it('marks only chapter 99 at chapter level, with the notice only while it is on the page', async () => {
+    useCatalog(['27', '84', '99'], 2);
+    fetchMock.mockImplementation(async (params) => ({
+      records:
+        params.cmdCode === 'TOTAL'
+          ? [{ ...COMMODITY_RECORDS[2], classificationCode: 'H6', primaryValue: 1_000_000_000 }]
+          : rowsOf(
+              [
+                ['27', 500_000_000, 'Mineral fuels'],
+                ['84', 300_000_000, 'Machinery'],
+                ['99', 200_000_000, RESIDUAL_DESC],
+              ],
+              2,
+            ),
+      totalCount: 3,
+      truncated: false,
+    }));
+    const onPage = await runToolContract(getTopCommoditiesTool, args);
+    expect(onPage.structuredContent).toMatchObject({
+      commodities: [
+        { rank: 1, cmdCode: '27' },
+        { rank: 2, cmdCode: '84' },
+        { rank: 3, cmdCode: '99', residual: true, sharePercent: 20 },
+      ],
+      notice:
+        'Code 99 (200,000,000 USD, 20% of matching TOTAL) holds trade not allocated to a chapter, not a product category.',
+    });
+    const { commodities } = getTopCommoditiesTool.output.parse(onPage.structuredContent);
+    expect(commodities.filter((row) => row.residual).map((row) => row.cmdCode)).toEqual(['99']);
+    expect(textOf(onPage)).toContain(
+      `**#3. 99** (aggrLevel: 2) — ${RESIDUAL_DESC}\n  Residual: true`,
+    );
+
+    const offPage = await runToolContract(getTopCommoditiesTool, { ...args, limit: 2 });
+    expect(offPage.structuredContent).toMatchObject({ totalCommodities: 3, totalValueUsd: 1e9 });
+    expect(offPage.structuredContent).not.toHaveProperty('notice');
+    expect(textOf(offPage)).not.toContain('Residual');
+  });
+
+  it.each([
+    [200_000_000, 'Code 99 (200,000,000 USD) holds'],
+    [null, 'Code 99 holds'],
+  ])(
+    'keeps the residual flag without ranks and leaves the share out of the notice when coverage is incomplete (value %s)',
+    async (value, opening) => {
+      fetchMock.mockImplementation(async (params) => ({
+        records:
+          params.cmdCode === 'TOTAL'
+            ? [{ ...COMMODITY_RECORDS[2], classificationCode: 'H6', partnerCode: 999 }]
+            : rowsOf(
+                [
+                  ['27', 500_000_000, 'Mineral fuels'],
+                  ['99', value, RESIDUAL_DESC],
+                ],
+                2,
+              ),
+        totalCount: 2,
+        truncated: false,
+      }));
+      const result = await runToolContract(getTopCommoditiesTool, args);
+      const notice = `${opening} trade not allocated to a chapter, not a product category.`;
+      expect(result.structuredContent).toMatchObject({ coverageComplete: false, notice });
+      const { commodities } = getTopCommoditiesTool.output.parse(result.structuredContent);
+      const residual = commodities.find((row) => row.cmdCode === '99');
+      expect(residual).toMatchObject({ residual: true });
+      expect(residual).not.toHaveProperty('rank');
+      expect(residual).not.toHaveProperty('sharePercent');
+      expect(textOf(result)).toContain(`> ${notice}`);
+    },
+  );
+
+  it('leaves the share out of the residual notice when a code is missing beside a matched TOTAL', async () => {
+    useCatalog(['27', '84', '99'], 2);
+    const rows: [string, number, string][] = [
+      ['27', 500_000_000, 'Mineral fuels'],
+      ['99', 200_000_000, RESIDUAL_DESC],
+    ];
+    fetchMock.mockImplementation(async (params) => {
+      if (params.cmdCode === 'TOTAL')
+        return {
+          records: [{ ...COMMODITY_RECORDS[2], classificationCode: 'H6', primaryValue: 1e9 }],
+          totalCount: 1,
+          truncated: false,
+        };
+      const requested = params.cmdCode.split(',');
+      // A chunk holding 84 comes back capped until 84 is requested alone, which fails.
+      if (requested.length === 1 && requested[0] === '84')
+        throw new McpError(JsonRpcErrorCode.ServiceUnavailable, 'Unavailable');
+      return {
+        records: rowsOf(
+          rows.filter(([code]) => requested.includes(code)),
+          2,
+        ),
+        totalCount: 500,
+        truncated: requested.includes('84'),
+      };
+    });
+    const result = await runToolContract(getTopCommoditiesTool, args);
+    const notice =
+      'Code 99 (200,000,000 USD) holds trade not allocated to a chapter, not a product category.';
+    expect(result.structuredContent).toMatchObject({
+      coverageComplete: false,
+      missingCodes: ['84'],
+      denominatorValueUsd: 1e9,
+      notice,
+    });
+    const { commodities } = getTopCommoditiesTool.output.parse(result.structuredContent);
+    expect(commodities.find((row) => row.cmdCode === '99')).toEqual({
+      cmdCode: '99',
+      cmdDesc: RESIDUAL_DESC,
+      aggrLevel: 2,
+      residual: true,
+      primaryValueUsd: 200_000_000,
+    });
+    expect(textOf(result)).toContain(`> ${notice}`);
   });
 });

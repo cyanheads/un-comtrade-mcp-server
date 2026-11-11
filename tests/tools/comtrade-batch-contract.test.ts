@@ -15,6 +15,7 @@ import { searchCommoditiesTool } from '@/mcp-server/tools/definitions/search-com
 import {
   ComtradeDataService,
   initComtradeDataService,
+  periodFailureError,
 } from '@/services/comtrade-data/comtrade-data-service.js';
 import {
   ComtradeMetaService,
@@ -53,6 +54,26 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it.each([
+  getTradeFlowsTool,
+  getServicesTradeTool,
+  getTradeBalanceTool,
+  getTopPartnersTool,
+  getTopCommoditiesTool,
+])('$name declares upstream_unavailable as the data service throws it', (definition) => {
+  const { code, data } = periodFailureError([
+    { period: '2022', reason: 'upstream_unavailable', status: 503 },
+  ]);
+  expect(definition.errors?.find((entry) => entry.reason === 'upstream_unavailable')).toEqual(
+    expect.objectContaining({
+      code,
+      retryable: data?.retryable,
+      recovery: (data?.recovery as { hint: string } | undefined)?.hint,
+      thrownBy: 'service',
+    }),
+  );
 });
 
 it.each([undefined, 0, 156])(

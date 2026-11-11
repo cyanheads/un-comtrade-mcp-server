@@ -27,20 +27,26 @@ export interface TradeDataParams {
   typeCode?: 'C' | 'S';
 }
 
-/** Why a requested period was not served. */
-export type TradePeriodFailureReason = 'rate_limited' | 'deadline_exceeded';
+/** Why a requested period was not served, in precedence order when one period fails more than once. */
+export type TradePeriodFailureReason =
+  | 'rate_limited'
+  | 'upstream_unavailable'
+  | 'deadline_exceeded';
 
 /** A requested period whose request failed transiently; the call still returns the periods that completed. */
 export interface TradePeriodFailure {
   period: string;
   /**
    * `rate_limited`: UN Comtrade answered 429 through every retry, or the budget ran out after
-   * its last answer was a 429. `deadline_exceeded`: the period could not start (no preview slot
-   * opened in time) or finish within the call's time budget.
+   * its last answer was a 429. `upstream_unavailable`: UN Comtrade answered a 5xx other than 501
+   * (504 included), or could not be reached, through every retry. `deadline_exceeded`: the period
+   * could not start (no preview slot opened in time) or finish within the call's time budget.
    */
   reason: TradePeriodFailureReason;
   /** Seconds UN Comtrade or the preview queue stated as the wait, when stated. */
   retryAfterSeconds?: number;
+  /** HTTP status of UN Comtrade's last answer for an `upstream_unavailable` period; absent when it could not be reached. */
+  status?: number;
 }
 
 /** A single trade flow record returned by the Comtrade API. */

@@ -151,6 +151,53 @@ describe('getTradeFlowsTool', () => {
     expect(result.structuredContent).not.toHaveProperty('unservedReporters');
     expect(JSON.stringify(result.content)).not.toContain('Unserved reporters');
   });
+  const twentyCodes = Array.from({ length: 20 }, (_, i) => String(i + 1).padStart(2, '0'));
+  it.each([
+    ['inside the cap', ['01', ...twentyCodes]],
+    ['past the cap', [...twentyCodes, '01']],
+  ])(
+    'deduplicates commodity codes before the 20-code cap, a repeat %s taking no slot',
+    async (_label, cmd_code) => {
+      const spy = vi
+        .spyOn(ComtradeDataService.prototype, 'fetchTradeData')
+        .mockResolvedValue({ records: [RECORD_USA_DEU], totalCount: 1, truncated: false });
+      const result = await runToolContract(getTradeFlowsTool, {
+        reporter_code: 840,
+        flow_code: 'X',
+        period: ['2022'],
+        cmd_code,
+      });
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({ cmdCode: twentyCodes.join(',') }),
+        expect.anything(),
+      );
+      expect(result.structuredContent).not.toHaveProperty('unservedCmdCodes');
+      expect(textOf(result)).not.toContain('Unserved commodity codes');
+    },
+  );
+  const eightPeriods = Array.from({ length: 8 }, (_, i) => String(2016 + i));
+  it.each([
+    ['inside the cap', ['2016', ...eightPeriods]],
+    ['past the cap', [...eightPeriods, '2016']],
+  ])(
+    'deduplicates periods before the keyless period cap, a repeat %s taking no slot',
+    async (_label, period) => {
+      const spy = vi
+        .spyOn(ComtradeDataService.prototype, 'fetchTradeData')
+        .mockResolvedValue({ records: [RECORD_USA_DEU], totalCount: 1, truncated: false });
+      const result = await runToolContract(getTradeFlowsTool, {
+        reporter_code: 840,
+        flow_code: 'X',
+        period,
+      });
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({ period: eightPeriods.join(',') }),
+        expect.anything(),
+      );
+      expect(result.structuredContent).not.toHaveProperty('unservedPeriods');
+      expect(textOf(result)).not.toContain('Unserved periods');
+    },
+  );
   let fetchMock: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -399,7 +446,22 @@ const REPORTER_STATUSES = new Map<number, ReporterStatus>([
   [842, { referenceStatus: 'reporter', name: 'USA' }],
   [
     250,
-    { referenceStatus: 'partner_only', name: 'Metropolitan France', suggestedReporterCode: 251 },
+    {
+      referenceStatus: 'partner_only',
+      name: 'Metropolitan France',
+      suggestedReporterCode: 251,
+      suggestionBasis: 'iso3',
+    },
+  ],
+  [
+    158,
+    {
+      referenceStatus: 'partner_only',
+      name: 'Taiwan, Province of China',
+      suggestedReporterCode: 490,
+      suggestionBasis: 'published_under',
+      suggestedReporterName: 'Other Asia, nes',
+    },
   ],
   [0, { referenceStatus: 'partner_only', name: 'World' }],
 ]);
@@ -542,6 +604,80 @@ describe('getTradeFlowsTool reporter coverage and frequency inference', () => {
   });
 
   it.each([
+    [
+      'reporter 158',
+      { reporter_code: 158, partner_code: 0 },
+      'No trade flow records found for reporter 158, flow=X, periods=[2023]. Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.',
+    ],
+    [
+      'partner 158',
+      { reporter_code: 842, partner_code: 158 },
+      'No trade flow records found for reporter 842, flow=X, periods=[2023]. UN Comtrade publishes the trade of partner 158 (Taiwan, Province of China) under 490 (Other Asia, nes). Retry with partner_code 490.',
+    ],
+    [
+      'partner 158 from all reporters',
+      { partner_code: 158 },
+      'No trade flow records found for all reporters, flow=X, periods=[2023]. UN Comtrade publishes the trade of partner 158 (Taiwan, Province of China) under 490 (Other Asia, nes). Retry with partner_code 490.',
+    ],
+  ] as const)('names 490 in the empty notice for %s', async (_case, codes, notice) => {
+    const result = await runToolContract(getTradeFlowsTool, {
+      ...codes,
+      flow_code: 'X',
+      period: ['2023'],
+    });
+    expect(result.structuredContent).toMatchObject({ records: [], notice });
+    expect(textOf(result)).toContain(`> ${notice}`);
+  });
+
+  it('ends an empty array-reporter notice with the partner counterpart only, leaving each reporter to reportersWithoutRecords', async () => {
+    const result = await runToolContract(getTradeFlowsTool, {
+      reporter_code: [250, 842],
+      partner_code: 158,
+      flow_code: 'X',
+      period: ['2023'],
+    });
+    const notice =
+      'No trade flow records found for reporter 250, 842, flow=X, periods=[2023]. UN Comtrade publishes the trade of partner 158 (Taiwan, Province of China) under 490 (Other Asia, nes). Retry with partner_code 490.';
+    expect(result.structuredContent).toMatchObject({
+      records: [],
+      notice,
+      reportersWithoutRecords: [
+        { reporterCode: 250, referenceStatus: 'partner_only', suggestedReporterCode: 251 },
+        { reporterCode: 842, referenceStatus: 'reporter', name: 'USA' },
+      ],
+    });
+    expect(textOf(result)).toContain(`> ${notice}`);
+  });
+
+  it('lists 158 among reporters without records with suggestedReporterCode 490 and nothing more', async () => {
+    fetchMock.mockResolvedValue({
+      records: [{ ...RECORD_USA_DEU, reporterCode: 842, partnerCode: 490 }],
+      totalCount: 1,
+      truncated: false,
+    });
+    const result = await runToolContract(getTradeFlowsTool, {
+      reporter_code: [842, 158],
+      flow_code: 'M',
+      period: ['2023'],
+      partner_code: 490,
+    });
+    const { reportersWithoutRecords } = result.structuredContent as {
+      reportersWithoutRecords: Record<string, unknown>[];
+    };
+    expect(reportersWithoutRecords).toStrictEqual([
+      {
+        reporterCode: 158,
+        referenceStatus: 'partner_only',
+        name: 'Taiwan, Province of China',
+        suggestedReporterCode: 490,
+      },
+    ]);
+    expect(textOf(result)).toContain(
+      '**Reporters without records:** 158 Taiwan, Province of China (partner_only, suggestedReporterCode 490).',
+    );
+  });
+
+  it.each([
     [842, 'reporter'],
     [999, 'unknown'],
   ])('keeps the availability pointer for a %s code that is %s', async (reporter_code) => {
@@ -624,7 +760,65 @@ describe('getTradeFlowsTool on the keyless data service', () => {
     await vi.runAllTimersAsync();
     return result;
   }
+  /** Text of the HTML error page below — body, status text, header, request host — that must never reach a caller. */
+  const UPSTREAM_TEXT = [
+    'DOCTYPE',
+    'proxy-internal-host-7',
+    'Upstream Node Overloaded',
+    'comtradeapi.un.org',
+  ];
+  const htmlPage = () =>
+    new Response(
+      '<!DOCTYPE html><html><head><title>503 Service Temporarily Unavailable</title></head><body><center>proxy-internal-host-7</center></body></html>',
+      {
+        status: 503,
+        statusText: 'Upstream Node Overloaded',
+        headers: { 'content-type': 'text/html', 'x-served-by': 'proxy-internal-host-7' },
+      },
+    );
+  const worldRow = (period: string) => ({
+    reporterCode: 842,
+    partnerCode: 0,
+    flowCode: 'X',
+    cmdCode: 'TOTAL',
+    period,
+    primaryValue: 10,
+    motCode: 0,
+    customsCode: 'C00',
+    partner2Code: 0,
+  });
+  it('serves the periods around one that keeps answering a 503 page, naming it and its status on both surfaces', async () => {
+    previewFake(async (period) =>
+      period === '2022' ? htmlPage() : Response.json({ data: [worldRow(period)] }),
+    );
+    const result = await run({
+      reporter_code: 842,
+      flow_code: 'X',
+      period: ['2021', '2022', '2023'],
+      partner_code: 0,
+    });
+    const notice = 'Period 2022 failed: UN Comtrade answered HTTP 503 after retries.';
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ shown: 2, unservedPeriods: ['2022'], notice });
+    expect(
+      (result.structuredContent as { records: { period: string }[] }).records.map((r) => r.period),
+    ).toEqual(['2021', '2023']);
+    const text = textOf(result);
+    expect(text).toContain('**Unserved periods:** 2022. Query them separately.');
+    expect(text).toContain(`> ${notice}`);
+    for (const leak of UPSTREAM_TEXT) expect(JSON.stringify(result)).not.toContain(leak);
+    // 2021 once, 2022 through its four attempts, then 2023.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
   it.each([
+    {
+      reason: 'upstream_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      respond: async () => htmlPage(),
+      message:
+        'No requested period was served. Periods 2022, 2023 failed: UN Comtrade answered HTTP 503 after retries.',
+      data: { recovery: { hint: 'Wait a minute and retry the same call.' } },
+    },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
@@ -667,6 +861,10 @@ describe('getTradeFlowsTool on the keyless data service', () => {
       expect(text).toContain(message);
       expect(text).toContain(data.recovery.hint);
       expect(text).toContain(`reason ${reason}`);
+      for (const leak of UPSTREAM_TEXT) expect(JSON.stringify(result)).not.toContain(leak);
+      expect(getTradeFlowsTool.errors).toContainEqual(
+        expect.objectContaining({ reason, code, retryable: true, thrownBy: 'service' }),
+      );
     },
   );
   it('omits zero placeholders beside real measurements and keeps zeros in real units (#36)', async () => {

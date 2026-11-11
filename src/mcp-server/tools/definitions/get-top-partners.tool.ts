@@ -65,6 +65,14 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
       thrownBy: 'service',
     },
     {
+      reason: 'upstream_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'The ranking request hit a UN Comtrade server error or network failure through its retries.',
+      recovery: 'Wait a minute and retry the same call.',
+      retryable: true,
+      thrownBy: 'service',
+    },
+    {
       reason: 'deadline_exceeded',
       code: JsonRpcErrorCode.Timeout,
       when: "The ranking request did not complete within the call's time budget.",

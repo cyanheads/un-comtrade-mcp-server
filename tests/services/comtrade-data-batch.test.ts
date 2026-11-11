@@ -3,8 +3,14 @@
  * @module tests/services/comtrade-data-batch.test
  */
 
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
+import {
+  ComtradeDataService,
+  describePeriodFailures,
+  periodFailureError,
+} from '@/services/comtrade-data/comtrade-data-service.js';
+import type { TradePeriodFailure } from '@/services/comtrade-data/types.js';
 import { initComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 import chapters from '../fixtures/comtrade-world-ag2.json';
 
@@ -23,6 +29,28 @@ const row = {
   customsCode: 'C00',
   partner2Code: 0,
 };
+/** Text of the HTML error page below — body, status text, header, request URL — that must never reach a caller. */
+const UPSTREAM_TEXT = [
+  'DOCTYPE',
+  'proxy-internal-host-7',
+  'Upstream Node Overloaded',
+  'example.test',
+  '/public/v1/preview',
+];
+const htmlPage = (status = 503) =>
+  new Response(
+    '<!DOCTYPE html><html><head><title>503 Service Temporarily Unavailable</title></head><body><h1>Service Temporarily Unavailable</h1><hr><center>proxy-internal-host-7</center></body></html>',
+    {
+      status,
+      statusText: 'Upstream Node Overloaded',
+      headers: { 'content-type': 'text/html', 'x-served-by': 'proxy-internal-host-7' },
+    },
+  );
+/** What `fetch` rejects with when the connection to UN Comtrade fails. */
+const unreachable = () =>
+  new TypeError('fetch failed', {
+    cause: Object.assign(new Error('connect ECONNRESET 10.0.0.7:443'), { code: 'ECONNRESET' }),
+  });
 
 describe('trade data request and normalization boundaries', () => {
   let svc: ComtradeDataService;
@@ -39,6 +67,7 @@ describe('trade data request and normalization boundaries', () => {
     svc.dispose();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
   async function finish<T>(promise: Promise<T>): Promise<T> {
     const outcome = promise.then(
@@ -221,7 +250,7 @@ describe('trade data request and normalization boundaries', () => {
     const controller = new AbortController();
     fetchMock.mockResolvedValue(Response.json({ data: [row] }));
     const promise = svc.fetchTradeData({ ...params, period: '2022,2023,2024' }, controller.signal);
-    const assertion = expect(promise).rejects.toThrow();
+    const assertion = expect(promise).rejects.toMatchObject({ name: 'AbortError' });
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     controller.abort();
@@ -386,6 +415,332 @@ describe('trade data request and normalization boundaries', () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
+  /** A preview fetch fake: `fail` answers a period with an error Response or rejects with an Error; other periods answer one row. */
+  function failingFake(fail: (period: string, init?: RequestInit) => Response | Error | undefined) {
+    const starts: { at: number; period: string }[] = [];
+    fetchMock.mockImplementation(async (input, init) => {
+      const period = new URL(String(input)).searchParams.get('period') ?? '';
+      starts.push({ at: Date.now(), period });
+      const failure = fail(period, init);
+      if (failure instanceof Error) throw failure;
+      return failure ?? Response.json({ data: [{ ...row, period }] });
+    });
+    return starts;
+  }
+  it.each([
+    ['an HTML 503 page', () => htmlPage(), 503],
+    ['a 500', () => new Response('{"statusCode":500}', { status: 500 }), 500],
+    ['a 502', () => new Response('bad gateway', { status: 502 }), 502],
+    ['a 504', () => new Response('gateway timeout', { status: 504 }), 504],
+    ['a network failure', unreachable, undefined],
+  ] as const)(
+    'serves the periods around one that keeps answering %s, still requesting the later ones',
+    async (_label, fail, status) => {
+      const starts = failingFake((period) => (period === '2022' ? fail() : undefined));
+      const result = await finish(svc.fetchTradeData({ ...params, period: '2021,2022,2023' }));
+      expect(result.records.map((r) => r.period)).toEqual(['2021', '2023']);
+      expect(result.failedPeriods).toEqual([
+        { period: '2022', reason: 'upstream_unavailable', ...(status !== undefined && { status }) },
+      ]);
+      expect(starts.map((s) => s.period)).toEqual(['2021', '2022', '2022', '2022', '2022', '2023']);
+      expect(starts.slice(1).every((s, i) => s.at - starts[i]!.at >= 4000)).toBe(true);
+    },
+  );
+  it.each([
+    [
+      'a 501',
+      () => new Response('not implemented', { status: 501 }),
+      { code: JsonRpcErrorCode.ServiceUnavailable, data: { status: 501 } },
+    ],
+    [
+      'a malformed envelope',
+      () => Response.json({ message: 'unexpected' }),
+      { data: { reason: 'invalid_upstream_response' } },
+    ],
+    [
+      'an HTML page with status 200',
+      () => new Response('<!DOCTYPE html><html></html>'),
+      { data: { reason: 'invalid_upstream_response' } },
+    ],
+  ] as const)(
+    'fails the call on %s, requesting no later period',
+    async (_label, fail, rejection) => {
+      const starts = failingFake((period) => (period === '2022' ? fail() : undefined));
+      await expect(
+        finish(svc.fetchTradeData({ ...params, period: '2021,2022,2023' })),
+      ).rejects.toMatchObject(rejection);
+      expect(starts.map((s) => s.period)).toEqual(['2021', '2022']);
+    },
+  );
+  it('fails the call when the caller cancels during 5xx retries, requesting nothing more', async () => {
+    const controller = new AbortController();
+    const starts = failingFake(() => htmlPage());
+    const outcome = svc
+      .fetchTradeData({ ...params, period: '2022,2023' }, controller.signal)
+      .catch((error: unknown) => error);
+    // Attempts at 0 and 4 s; at 5 s the second retry is waiting out its backoff.
+    await vi.advanceTimersByTimeAsync(5000);
+    controller.abort();
+    const failure = await outcome;
+    expect(failure).toBeInstanceOf(DOMException);
+    expect((failure as DOMException).name).toBe('AbortError');
+    await vi.runAllTimersAsync();
+    expect(starts.map((s) => s.period)).toEqual(['2022', '2022']);
+  });
+  it("fails the call when the caller cancels during the last period's 5xx retries, returning nothing it served", async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const controller = new AbortController();
+    const starts = failingFake((period) => (period === '2022' ? htmlPage() : undefined));
+    const outcome = svc
+      .fetchTradeData({ ...params, period: '2021,2022' }, controller.signal)
+      .catch((error: unknown) => error);
+    // 2021 served at 0 s; 2022 attempted at 4 and 8 s; at 9 s its second retry is waiting out its backoff.
+    await vi.advanceTimersByTimeAsync(9000);
+    controller.abort();
+    const failure = await outcome;
+    expect(failure).toBeInstanceOf(DOMException);
+    expect((failure as DOMException).name).toBe('AbortError');
+    await vi.runAllTimersAsync();
+    expect(starts.map((s) => s.period)).toEqual(['2021', '2022', '2022']);
+  });
+  it('reports a period whose 5xx body read the deadline cuts as deadline_exceeded', async () => {
+    const starts = failingFake((period, init) =>
+      period === '2022'
+        ? new Response(
+            new ReadableStream({
+              start(controller) {
+                init?.signal?.addEventListener(
+                  'abort',
+                  () => controller.error(init.signal?.reason),
+                  {
+                    once: true,
+                  },
+                );
+              },
+            }),
+            { status: 503 },
+          )
+        : undefined,
+    );
+    const result = await finish(
+      svc.fetchTradeData({ ...params, period: '2021,2022' }, undefined, Date.now() + 10_000),
+    );
+    expect(result.records.map((r) => r.period)).toEqual(['2021']);
+    expect(result.failedPeriods).toEqual([{ period: '2022', reason: 'deadline_exceeded' }]);
+    expect(starts.map((s) => s.period)).toEqual(['2021', '2022']);
+  });
+  it('reports a period whose 503 retries the deadline cuts short as deadline_exceeded', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const starts = failingFake((period) => (period === '2022' ? htmlPage() : undefined));
+    const result = await finish(
+      svc.fetchTradeData({ ...params, period: '2021,2022' }, undefined, Date.now() + 10_000),
+    );
+    // 2022 answered 503 at 4 and 8 s; its 3 s backoff would outlast the 2 s left, so no third attempt.
+    expect(result.records.map((r) => r.period)).toEqual(['2021']);
+    expect(result.failedPeriods).toEqual([{ period: '2022', reason: 'deadline_exceeded' }]);
+    expect(starts.map((s) => [s.period, s.at])).toEqual([
+      ['2021', starts[0]!.at],
+      ['2022', starts[0]!.at + 4000],
+      ['2022', starts[0]!.at + 8000],
+    ]);
+  });
+  it('fails with upstream_unavailable when no period completes, carrying no upstream text', async () => {
+    const starts = failingFake(() => htmlPage());
+    const failure = await finish(svc.fetchTradeData({ ...params, period: '2022,2023' })).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(McpError);
+    const { code, message, data } = failure as McpError;
+    expect({ code, message, data }).toEqual({
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      message:
+        'No requested period was served. Periods 2022, 2023 failed: UN Comtrade answered HTTP 503 after retries.',
+      data: {
+        reason: 'upstream_unavailable',
+        retryable: true,
+        recovery: { hint: 'Wait a minute and retry the same call.' },
+      },
+    });
+    for (const text of UPSTREAM_TEXT) expect(JSON.stringify({ message, data })).not.toContain(text);
+    expect(starts.map((s) => s.period)).toEqual([
+      ...Array(4).fill('2022'),
+      ...Array(4).fill('2023'),
+    ]);
+  });
+  it('settles the heaviest all-503 call inside the 52 s budget on a fixed retry schedule', async () => {
+    // Midpoint jitter: retry backoffs of exactly 1.5, 3 and 6 s.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const starts = failingFake(() => htmlPage());
+    const t0 = Date.now();
+    let settledMs = Number.NaN;
+    const failure = await finish(
+      svc.fetchTradeData({ ...params, period: '2020,2021,2022,2023' }).finally(() => {
+        settledMs = Date.now() - t0;
+      }),
+    ).catch((error: unknown) => error);
+    // Each period: attempts 4 s apart on the shared pacer, the last after the 6 s backoff.
+    expect(starts.map((s) => [s.period, s.at - t0])).toEqual([
+      ['2020', 0],
+      ['2020', 4000],
+      ['2020', 8000],
+      ['2020', 14_000],
+      ['2021', 18_000],
+      ['2021', 22_000],
+      ['2021', 26_000],
+      ['2021', 32_000],
+      ['2022', 36_000],
+      ['2022', 40_000],
+      ['2022', 44_000],
+      ['2022', 50_000],
+    ]);
+    // 2023's start cannot fit before the deadline, so it is shed unsent.
+    expect(settledMs).toBe(50_000);
+    expect(failure).toMatchObject({
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      message:
+        "No requested period was served. Periods 2020, 2021, 2022 failed: UN Comtrade answered HTTP 503 after retries. Period 2023 was not completed within the call's time budget.",
+      data: { reason: 'upstream_unavailable' },
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each([
+    [0, 4],
+    [0.999, 4],
+    [0.999, 8],
+  ])(
+    'settles an all-503 call inside the 52 s budget at jitter %s over %i periods, starting nothing after',
+    async (random, count) => {
+      vi.spyOn(Math, 'random').mockReturnValue(random);
+      const starts = failingFake(() => htmlPage());
+      const t0 = Date.now();
+      let settledMs = Number.NaN;
+      const periods = Array.from({ length: count }, (_, i) => String(2016 + i));
+      const failure = await finish(
+        svc.fetchTradeData({ ...params, period: periods.join(',') }).finally(() => {
+          settledMs = Date.now() - t0;
+        }),
+      ).catch((error: unknown) => error);
+      expect(settledMs).toBeLessThanOrEqual(52_000);
+      expect(starts.every((s) => s.at - t0 < 52_000)).toBe(true);
+      expect(failure).toMatchObject({
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        message: expect.stringContaining('2016, 2017'),
+        data: { reason: 'upstream_unavailable' },
+      });
+      const sent = fetchMock.mock.calls.length;
+      await vi.runAllTimersAsync();
+      expect(fetchMock).toHaveBeenCalledTimes(sent);
+    },
+  );
+  it('fails an authenticated call whose batched request keeps answering 503 with upstream_unavailable for every period', async () => {
+    settings.subscriptionKey = 'test-key';
+    failingFake(() => htmlPage());
+    await expect(
+      finish(svc.fetchTradeData({ ...params, period: '2022,2023' })),
+    ).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      message:
+        'No requested period was served. Periods 2022, 2023 failed: UN Comtrade answered HTTP 503 after retries.',
+      data: { reason: 'upstream_unavailable', retryable: true },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+  it.each<{ label: string; failures: TradePeriodFailure[]; notice: string; error: object }>([
+    {
+      label: 'a server error over a deadline for the same period',
+      failures: [
+        { period: '2021', reason: 'deadline_exceeded' },
+        { period: '2021', reason: 'upstream_unavailable', status: 502 },
+        { period: '2022', reason: 'deadline_exceeded' },
+      ],
+      notice:
+        "Period 2021 failed: UN Comtrade answered HTTP 502 after retries. Period 2022 was not completed within the call's time budget.",
+      error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        data: { reason: 'upstream_unavailable' },
+      },
+    },
+    {
+      label: 'a rate limit over a server error for the same period',
+      failures: [
+        { period: '2021', reason: 'upstream_unavailable', status: 503 },
+        { period: '2021', reason: 'rate_limited', retryAfterSeconds: 9 },
+        { period: '2022', reason: 'upstream_unavailable' },
+      ],
+      notice:
+        'Period 2021 was rate-limited; wait 9 seconds before requesting it again. Period 2022 failed: UN Comtrade could not be reached after retries.',
+      error: {
+        code: JsonRpcErrorCode.RateLimited,
+        data: { reason: 'rate_limited', retryAfter: 9 },
+      },
+    },
+    {
+      label: 'server errors grouped by status, unreached periods apart',
+      failures: [
+        { period: '2020', reason: 'upstream_unavailable', status: 503 },
+        { period: '2021', reason: 'upstream_unavailable' },
+        { period: '2022', reason: 'upstream_unavailable', status: 503 },
+        { period: '2023', reason: 'upstream_unavailable', status: 504 },
+      ],
+      notice:
+        'Periods 2020, 2022 failed: UN Comtrade answered HTTP 503 after retries. Period 2021 failed: UN Comtrade could not be reached after retries. Period 2023 failed: UN Comtrade answered HTTP 504 after retries.',
+      error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        data: { reason: 'upstream_unavailable' },
+      },
+    },
+    {
+      label: "the longest of one period's rate-limit waits, wherever it falls",
+      failures: [
+        { period: '2021', reason: 'rate_limited', retryAfterSeconds: 6 },
+        { period: '2021', reason: 'rate_limited', retryAfterSeconds: 9 },
+        { period: '2021', reason: 'rate_limited', retryAfterSeconds: 7 },
+      ],
+      notice: 'Period 2021 was rate-limited; wait 9 seconds before requesting it again.',
+      error: {
+        code: JsonRpcErrorCode.RateLimited,
+        data: { reason: 'rate_limited', retryAfter: 9 },
+      },
+    },
+    {
+      label: "the first of one period's server errors, a later stated wait aside",
+      failures: [
+        { period: '2021', reason: 'upstream_unavailable', status: 502 },
+        { period: '2021', reason: 'upstream_unavailable', status: 503, retryAfterSeconds: 10 },
+      ],
+      notice: 'Period 2021 failed: UN Comtrade answered HTTP 502 after retries.',
+      error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        data: { reason: 'upstream_unavailable' },
+      },
+    },
+    {
+      label: 'deadlines alone',
+      failures: [{ period: '2022', reason: 'deadline_exceeded' }],
+      notice: "Period 2022 was not completed within the call's time budget.",
+      error: { code: JsonRpcErrorCode.Timeout, data: { reason: 'deadline_exceeded' } },
+    },
+  ])('ranks $label in the notice and the thrown reason', ({ failures, notice, error }) => {
+    expect(describePeriodFailures(failures)).toBe(notice);
+    expect(periodFailureError(failures)).toMatchObject({
+      ...error,
+      message: `No requested period was served. ${notice}`,
+    });
+  });
+  it.each([
+    [45, 'Wait a minute and retry the same call.', undefined],
+    [61, 'Wait 61 seconds and retry the same call.', 61],
+    [120, 'Wait 120 seconds and retry the same call.', 120],
+  ])(
+    'passes on a server-stated wait of %i seconds only when it exceeds a minute',
+    (seconds, hint, retryAfter) => {
+      const { data } = periodFailureError([
+        { period: '2021', reason: 'upstream_unavailable', status: 503, retryAfterSeconds: seconds },
+      ]);
+      expect(data?.recovery).toEqual({ hint });
+      expect(data?.retryAfter).toBe(retryAfter);
+    },
+  );
   it('serves the per-call period caps: 8 keyless (4 for two-flow balance), 12 authenticated', () => {
     expect([svc.periodsPerCall(1), svc.periodsPerCall(2)]).toEqual([8, 4]);
     settings.subscriptionKey = 'test-key';

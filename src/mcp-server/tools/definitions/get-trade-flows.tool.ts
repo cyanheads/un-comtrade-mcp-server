@@ -18,7 +18,7 @@ import {
   periodsMatchFrequency,
   resolveFrequency,
 } from '@/mcp-server/tools/comtrade-input.js';
-import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
+import { counterpartNotices } from '@/mcp-server/tools/reporter-notice.js';
 import {
   describePeriodFailures,
   getComtradeDataService,
@@ -76,14 +76,7 @@ const TradeFlowRecordSchema = z.object({
 export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
   title: 'Get Trade Flow Records',
   description:
-    'Fetch bilateral trade flow records — the primary data retrieval tool. ' +
-    'Returns trade value in USD (primaryValue — FOB for exports, CIF for imports), ' +
-    'quantity, net weight, and period/commodity/partner metadata for each row. ' +
-    'Accepts multiple periods and commodity codes per call; pass partner_code 0 to get ' +
-    'totals aggregated across all partners. Omit cmd_code or pass "TOTAL" to aggregate ' +
-    'all commodities. Keyless preview makes one request per served period, at least 4 seconds apart, with a 500-record cap per request. ' +
-    'Use comtrade_lookup_countries to resolve reporter/partner codes and ' +
-    'comtrade_search_commodities to resolve HS codes. For SITC, supply codes from the selected SITC revision.',
+    'Fetch bilateral trade flow records — the primary data retrieval tool. Returns trade value in USD (primaryValue — FOB for exports, CIF for imports), quantity, net weight, and period/commodity/partner metadata for each row. Accepts multiple periods and commodity codes per call; pass partner_code 0 to get totals aggregated across all partners. Omit cmd_code or pass "TOTAL" to aggregate all commodities. Keyless preview makes one request per served period, at least 4 seconds apart, with a 500-record cap per request. Use comtrade_lookup_countries to resolve reporter/partner codes and comtrade_search_commodities to resolve HS codes. For SITC, supply codes from the selected SITC revision.',
   annotations: { readOnlyHint: true, openWorldHint: true },
   errors: [
     {
@@ -125,6 +118,14 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       thrownBy: 'service',
     },
     {
+      reason: 'upstream_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'No requested period completed and at least one request failed on a UN Comtrade server error or network failure after retries.',
+      recovery: 'Wait a minute and retry the same call.',
+      retryable: true,
+      thrownBy: 'service',
+    },
+    {
       reason: 'deadline_exceeded',
       code: JsonRpcErrorCode.Timeout,
       when: "No served period completed within the call's time budget.",
@@ -144,7 +145,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
         ])
         .optional()
         .describe(
-          'M49 reporter code or nonempty array (input ceiling 200). Deduplicates and serves the first 20 reporters, disclosing the remainder; served codes of an array that return no records are listed in reportersWithoutRecords. Some codes are partners only (0 World, 250 Metropolitan France; France reports as 251). Omit only with an explicit partner_code to query all reporters.',
+          'M49 reporter code or nonempty array (input ceiling 200). Deduplicates and serves the first 20 reporters, disclosing the remainder; served codes of an array that return no records are listed in reportersWithoutRecords. Some codes are partners only (0 World, 250 Metropolitan France, 158 Taiwan, Province of China): France reports as 251, and UN Comtrade publishes the trade of 158 under 490 (Other Asia, nes). Omit only with an explicit partner_code to query all reporters.',
         ),
       flow_code: goodsFlowSchema.describe(
         'Trade flow direction: M=imports, X=exports, RX=re-exports, RM=re-imports.',
@@ -154,24 +155,19 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
         .min(1)
         .max(120)
         .describe(
-          'One or more periods to query, all annual "YYYY" (e.g. ["2022", "2023"]) or all monthly "YYYYMM" (e.g. ["202201", "202202"]); mixed lengths are rejected. ' +
-            'Serves the first 8 periods keyless (12 with authenticated access); the rest, and any period whose request is rate limited or runs out of time, are listed in unservedPeriods. Input ceiling 120.',
+          'One or more periods to query, all annual "YYYY" (e.g. ["2022", "2023"]) or all monthly "YYYYMM" (e.g. ["202201", "202202"]); mixed lengths are rejected. Serves the first 8 distinct periods keyless (12 with authenticated access); the rest, and any period whose request is rate limited, fails on a UN Comtrade server error or network failure, or runs out of time, are listed in unservedPeriods. Input ceiling 120.',
         ),
       partner_code: m49Schema
         .optional()
         .describe(
-          'M49 code of the trade partner. ' +
-            'Use 0 to aggregate across all partners (World total). ' +
-            'Omit to get a disaggregated breakdown by partner country.',
+          'M49 code of the trade partner. Use 0 to aggregate across all partners (World total). Omit to get a disaggregated breakdown by partner country.',
         ),
       cmd_code: z
         .array(codeSchema)
         .max(200)
         .optional()
         .describe(
-          'HS or SITC commodity codes to query. Serves the first 20 codes and discloses the remainder; input ceiling 200. ' +
-            'Pass ["TOTAL"] or omit to aggregate all commodities. ' +
-            'Use comtrade_search_commodities for codes in the selected HS or SITC edition.',
+          'HS or SITC commodity codes to query. Serves the first 20 distinct codes and discloses the remainder; input ceiling 200. Pass ["TOTAL"] or omit to aggregate all commodities. Use comtrade_search_commodities for codes in the selected HS or SITC edition.',
         ),
       classification: goodsClassificationSchema
         .default('HS')
@@ -240,7 +236,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
               .number()
               .optional()
               .describe(
-                'Reporter-valid code sharing a partner_only code’s ISO-3 identity (250 → 251); query it instead.',
+                'Reporter-valid code to query instead of a partner_only code: the one sharing its ISO-3 identity (250 → 251), or the one UN Comtrade publishes its trade under (158 → 490).',
               ),
           })
           .describe('A served reporter with no records, classified by the reference catalogs.'),
@@ -253,7 +249,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       .array(z.string())
       .optional()
       .describe(
-        'Periods not served: past the period cap (8 keyless, 12 authenticated) or whose requests were rate limited or ran out of time; query them separately.',
+        'Periods not served: past the period cap (8 keyless, 12 authenticated) or whose requests were rate limited, failed on a UN Comtrade server error or network failure, or ran out of time; query them separately.',
       ),
     unservedCmdCodes: z
       .array(z.string())
@@ -269,7 +265,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       .string()
       .optional()
       .describe(
-        'Why data is missing: periods that were rate limited (with the wait) or ran out of time, and a recovery hint when no records are returned, naming the reporter-valid counterpart of a partner-only reporter_code.',
+        'Why data is missing: periods that were rate limited (with the wait), failed on a UN Comtrade server error (with the HTTP status) or network failure, or ran out of time, and a recovery hint when no records are returned, naming the code to query instead of a partner-only reporter_code (250 → 251, 158 → 490) or of a partner_code with a reporter-valid counterpart (840 → 842, 158 → 490).',
       ),
   },
 
@@ -314,9 +310,11 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
     if (Array.isArray(reporters) && reporters.length > 20)
       ctx.enrich({ unservedReporters: reporters.slice(20) });
     const servedReporters = Array.isArray(reporters) ? reporters.slice(0, 20) : reporters;
+    // Repeats are dropped before each cap, so they take no slot and a served value is never listed unserved.
     const periodCap = svc.periodsPerCall(1);
-    const periods = input.period.slice(0, periodCap);
-    const normalizedCodes = input.cmd_code?.filter(Boolean);
+    const requestedPeriods = [...new Set(input.period)];
+    const periods = requestedPeriods.slice(0, periodCap);
+    const normalizedCodes = input.cmd_code && [...new Set(input.cmd_code.filter(Boolean))];
     const codes = normalizedCodes?.slice(0, 20);
     if (normalizedCodes && normalizedCodes.length > 20)
       ctx.enrich({ unservedCmdCodes: normalizedCodes.slice(20) });
@@ -336,14 +334,14 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
     if (result.referenceNotice) ctx.enrich({ referenceNotice: result.referenceNotice });
     const failed = new Set(result.failedPeriods?.map((failure) => failure.period));
     const unservedPeriods = [
-      ...[...new Set(periods)].filter((period) => failed.has(period)),
-      ...input.period.slice(periodCap),
+      ...periods.filter((period) => failed.has(period)),
+      ...requestedPeriods.slice(periodCap),
     ];
     if (unservedPeriods.length > 0) ctx.enrich({ unservedPeriods });
+    const reference = getComtradeReferenceService();
     // Records come only from completed periods. A capped response can hide a reporter's rows.
     if (Array.isArray(servedReporters) && !result.truncated) {
       const answered = new Set(result.records.map((record) => record.reporterCode));
-      const reference = getComtradeReferenceService();
       const reportersWithoutRecords = servedReporters
         .filter((code) => !answered.has(code))
         .map((reporterCode) => ({ reporterCode, ...reference.getReporterStatus(reporterCode) }));
@@ -352,18 +350,22 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
 
     const notices = result.failedPeriods ? [describePeriodFailures(result.failedPeriods)] : [];
     if (result.records.length === 0) {
-      const partnerOnly =
-        typeof servedReporters === 'number'
-          ? partnerOnlyReporterNotice(
-              servedReporters,
-              getComtradeReferenceService().getReporterStatus(servedReporters),
-            )
-          : undefined;
+      const counterparts = counterpartNotices(
+        reference,
+        typeof servedReporters === 'number' ? servedReporters : undefined,
+        input.partner_code,
+      );
+      const subject =
+        servedReporters === undefined
+          ? 'all reporters'
+          : `reporter ${Array.isArray(servedReporters) ? servedReporters.join(', ') : servedReporters}`;
+      const served = periods.filter((period) => !failed.has(period)).join(', ');
+      const next =
+        counterparts.length > 0
+          ? counterparts.join(' ')
+          : 'Use comtrade_get_data_availability to check if data exists for this period.';
       notices.push(
-        `No trade flow records found for ${servedReporters === undefined ? 'all reporters' : `reporter ${Array.isArray(servedReporters) ? servedReporters.join(', ') : servedReporters}`}, ` +
-          `flow=${input.flow_code}, periods=[${periods.filter((period) => !failed.has(period)).join(', ')}]. ` +
-          (partnerOnly ??
-            'Use comtrade_get_data_availability to check if data exists for this period.'),
+        `No trade flow records found for ${subject}, flow=${input.flow_code}, periods=[${served}]. ${next}`,
       );
     }
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));

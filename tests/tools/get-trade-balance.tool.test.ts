@@ -158,19 +158,170 @@ describe('getTradeBalanceTool', () => {
         {
           period: '2022',
           exportsUsd: 50,
-          balanceUsd: 50,
           note: 'Export data only; no import data found for this period.',
         },
         {
           period: '2023',
           importsUsd: 10,
-          balanceUsd: -10,
           note: 'Import data only; no export data found for this period.',
         },
       ],
     });
+    // A missing flow is not zero, so neither period has a balance or coverage ratio.
+    for (const period of (result.structuredContent as { periods: object[] }).periods) {
+      expect(period).not.toHaveProperty('balanceUsd');
+      expect(period).not.toHaveProperty('coverageRatio');
+    }
     for (const text of ['2022', '2023', 'Export data only', 'Import data only', '84, 85'])
       expect(JSON.stringify(result.content)).toContain(text);
+    for (const text of ['**Balance:**', 'Surplus', 'Deficit'])
+      expect(JSON.stringify(result.content)).not.toContain(text);
+  });
+
+  it('balances only periods with both flows, notes a served period with neither, and leaves out a failed one', async () => {
+    fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
+      Promise.resolve(
+        flowCode === 'X'
+          ? {
+              records: [EXPORT_RECORD, { ...EXPORT_RECORD, period: '2023' }],
+              totalCount: 2,
+              truncated: false,
+            }
+          : {
+              records: [IMPORT_RECORD],
+              totalCount: 1,
+              truncated: false,
+              failedPeriods: [{ period: '2025', reason: 'rate_limited', retryAfterSeconds: 5 }],
+            },
+      ),
+    );
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2022', '2023', '2024', '2025'],
+    });
+    const neither = 'No export or import data found for this period.';
+    const notice =
+      'Period 2025 was rate-limited; wait 5 seconds before requesting it again. Period 2024 returned no export or import data; use comtrade_get_data_availability to check whether it is published.';
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      periods: [
+        {
+          period: '2022',
+          exportsUsd: 2_000_000_000,
+          importsUsd: 3_000_000_000,
+          balanceUsd: -1_000_000_000,
+        },
+        {
+          period: '2023',
+          exportsUsd: 2_000_000_000,
+          note: 'Export data only; no import data found for this period.',
+        },
+        { period: '2024', note: neither },
+      ],
+      unservedPeriods: ['2025'],
+      notice,
+    });
+    const { periods } = result.structuredContent as { periods: object[] };
+    expect(periods[1]).not.toHaveProperty('balanceUsd');
+    expect(periods[2]).toEqual({ period: '2024', note: neither });
+    const text = textOf(result);
+    expect(text).toContain(`### Period: 2024\n> Note: ${neither}`);
+    expect(text).toContain('**Balance:** $1,000,000,000 USD (Deficit)');
+    expect(text.match(/\*\*Balance:\*\*|Surplus|Deficit/g)).toEqual(['**Balance:**', 'Deficit']);
+    expect(text).not.toContain('Period: 2025');
+    expect(text).toContain(`> ${notice}`);
+  });
+
+  it('names every served period with neither flow in one notice sentence', async () => {
+    fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
+      Promise.resolve({
+        records: [{ ...(flowCode === 'X' ? EXPORT_RECORD : IMPORT_RECORD), period: '2021' }],
+        totalCount: 1,
+        truncated: false,
+      }),
+    );
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2021', '2025', '2026'],
+    });
+    const notice =
+      'Periods 2025, 2026 returned no export or import data; use comtrade_get_data_availability to check whether they are published.';
+    expect(result.structuredContent).toMatchObject({
+      periods: [
+        { period: '2021', balanceUsd: -1_000_000_000 },
+        { period: '2025', note: 'No export or import data found for this period.' },
+        { period: '2026', note: 'No export or import data found for this period.' },
+      ],
+      notice,
+    });
+    expect(textOf(result)).toContain(`> ${notice}`);
+  });
+
+  it('labels a positive balance Surplus, a negative one Deficit, and a zero balance neither', () => {
+    const blocks = getTradeBalanceTool.format!({
+      periods: [
+        { period: '2021', exportsUsd: 5, importsUsd: 3, balanceUsd: 2, coverageRatio: 5 / 3 },
+        { period: '2022', exportsUsd: 3, importsUsd: 5, balanceUsd: -2, coverageRatio: 0.6 },
+        { period: '2023', exportsUsd: 4, importsUsd: 4, balanceUsd: 0, coverageRatio: 1 },
+      ],
+      reporterCode: 840,
+      reporterDesc: 'United States of America',
+      partnerCode: 0,
+      partnerDesc: 'World',
+      mirrorCaveat: 'Mirror asymmetry is common.',
+    });
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('**Balance:** $2 USD (Surplus)');
+    expect(text).toContain('**Balance:** $2 USD (Deficit)');
+    expect(text).toContain('**Balance:** $0 USD\n**Coverage Ratio:** 1\n');
+    expect(text.match(/Surplus|Deficit/g)).toEqual(['Surplus', 'Deficit']);
+  });
+
+  it('renders the coverage ratio at the precision structuredContent carries', async () => {
+    fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
+      Promise.resolve({
+        records: [
+          flowCode === 'X'
+            ? { ...EXPORT_RECORD, primaryValue: 5_000_000 }
+            : { ...IMPORT_RECORD, primaryValue: 3_000_000 },
+        ],
+        totalCount: 1,
+        truncated: false,
+      }),
+    );
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2022'],
+    });
+    const ratio = (result.structuredContent as { periods: { coverageRatio: number }[] }).periods[0]
+      ?.coverageRatio;
+    expect(ratio).toBe(5 / 3);
+    expect(textOf(result)).toContain(`**Coverage Ratio:** ${5 / 3}\n`);
+  });
+
+  it('balances a period whose import rows sum to zero, leaving out the coverage ratio', async () => {
+    fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
+      Promise.resolve({
+        records: [
+          flowCode === 'X'
+            ? { ...EXPORT_RECORD, primaryValue: 5_000_000 }
+            : { ...IMPORT_RECORD, primaryValue: 0 },
+        ],
+        totalCount: 1,
+        truncated: false,
+      }),
+    );
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2022'],
+    });
+    expect(result.isError).not.toBe(true);
+    expect((result.structuredContent as { periods: object[] }).periods).toEqual([
+      { period: '2022', exportsUsd: 5_000_000, importsUsd: 0, balanceUsd: 5_000_000 },
+    ]);
+    const text = textOf(result);
+    expect(text).toContain('**Balance:** $5,000,000 USD (Surplus)');
+    expect(text).not.toContain('Coverage Ratio');
   });
 
   it('marks surplus when exports > imports', async () => {
@@ -230,13 +381,128 @@ describe('getTradeBalanceTool', () => {
     expect(getTradeBalanceTool.errors?.map((e) => e.reason)).toEqual([
       'keyless_hs_edition_unsupported',
       'invalid_reporter_filter',
+      'overlapping_cmd_codes',
       'upstream_validation',
       'invalid_upstream_response',
       'no_data',
       'partner_only_reporter',
       'rate_limited',
+      'upstream_unavailable',
       'deadline_exceeded',
     ]);
+  });
+
+  it.each([
+    ['HS', ['27', '2709'], '27', '2709'],
+    ['HS', ['2709', '27'], '2709', '27'],
+    ['HS', ['TOTAL', '27'], 'TOTAL', '27'],
+    ['HS', ['TOTAL', 'AG2'], 'TOTAL', 'AG2'],
+    ['HS', ['ag2', '2709'], 'AG2', '2709'],
+    ['HS', ['AG2', 'AG4'], 'AG2', 'AG4'],
+    ['HS', ['AG4', '27'], 'AG4', '27'],
+    ['HS', ['9999', '9999AA'], '9999', '9999AA'],
+    ['S4', ['33', '333'], '33', '333'],
+    ['S4', ['AG1', 'AG2'], 'AG1', 'AG2'],
+    // Every AG selector is three characters, so AG3 overlaps another selector on the AG rule alone.
+    ['S4', ['AG3', 'AG1'], 'AG3', 'AG1'],
+    ['S4', ['AG3', '33'], 'AG3', '33'],
+    ['S4', ['93', '93X'], '93', '93X'],
+    // The earliest entry that overlaps a later one, with the first entry it overlaps.
+    ['HS', ['01', '27', '2709', '0101'], '01', '0101'],
+    // Codes past the 20-code cap count: a caller adds their follow-up balances to this one.
+    [
+      'HS',
+      [...Array.from({ length: 20 }, (_, i) => String(i).padStart(2, '0')), '27', '2709'],
+      '27',
+      '2709',
+    ],
+  ] as const)(
+    'rejects %s cmd_code %j naming %s and %s before any request',
+    async (classification, cmd_code, first, second) => {
+      const hint = getTradeBalanceTool.errors?.find(
+        (e) => e.reason === 'overlapping_cmd_codes',
+      )?.recovery;
+      const message = `cmd_code entries ${first} and ${second} overlap, so the balance would count their shared trade twice.`;
+      const result = await runToolContract(getTradeBalanceTool, {
+        reporter_code: 842,
+        period: ['2023'],
+        classification,
+        cmd_code,
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+      expect(hint).toEqual(expect.any(String));
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message,
+          data: { reason: 'overlapping_cmd_codes', recovery: { hint } },
+        },
+      });
+      const text = textOf(result);
+      expect(text).toContain(message);
+      expect(text).toContain(hint);
+      expect(text).toContain('reason overlapping_cmd_codes');
+    },
+  );
+
+  it.each([
+    ['HS', undefined, 'TOTAL'],
+    ['HS', ['TOTAL'], 'TOTAL'],
+    ['HS', ['ag2'], 'AG2'],
+    ['S4', ['AG3'], 'AG3'],
+    ['HS', ['27', '84'], '27,84'],
+    ['HS', ['2709', '2710'], '2709,2710'],
+    ['HS', ['AG2', '27'], 'AG2,27'],
+    ['HS', ['AG6', '9999AA'], 'AG6,9999AA'],
+    ['S4', ['AG3', '333'], 'AG3,333'],
+    ['S4', ['333', '334'], '333,334'],
+  ] as const)(
+    'accepts %s cmd_code %j and requests %s for both flows',
+    async (classification, cmd_code, cmdCode) => {
+      const result = await runToolContract(getTradeBalanceTool, {
+        reporter_code: 840,
+        period: ['2022'],
+        classification,
+        ...(cmd_code && { cmd_code }),
+      });
+      expect(result.isError).not.toBe(true);
+      expect(fetchMock.mock.calls.map(([params]) => params.cmdCode)).toEqual([cmdCode, cmdCode]);
+    },
+  );
+
+  it('drops exact duplicates before the 20-code cap, so served and unserved codes are distinct', async () => {
+    const twoDigit = Array.from({ length: 20 }, (_, i) => String(i).padStart(2, '0'));
+    const served = ['27', ...twoDigit.slice(0, 19)];
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2022'],
+      cmd_code: ['27', ' 27 ', ...twoDigit, '00'],
+    });
+    expect(result.isError).not.toBe(true);
+    expect(fetchMock.mock.calls.map(([params]) => params.cmdCode)).toEqual([
+      served.join(','),
+      served.join(','),
+    ]);
+    expect(result.structuredContent).toMatchObject({ cmdCodes: served, unservedCmdCodes: ['19'] });
+    const text = textOf(result);
+    expect(text).toContain(`**Commodities:** ${served.join(', ')}`);
+    expect(text).toContain('**Unserved commodity codes:** 19. Query them separately.');
+  });
+
+  it('drops repeated periods before the period cap, so served and unserved periods are distinct', async () => {
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2022', '2023', '2022', '2024', '2025', '2023', '2026'],
+    });
+    expect(result.isError).not.toBe(true);
+    // Keyless serves 4 periods per call, each flow requesting all of them.
+    expect(fetchMock.mock.calls.map(([params]) => params.period)).toEqual([
+      '2022,2023,2024,2025',
+      '2022,2023,2024,2025',
+    ]);
+    expect(result.structuredContent).toMatchObject({ unservedPeriods: ['2026'] });
+    expect(textOf(result)).toContain('**Unserved periods:** 2026. Query them separately.');
   });
 
   it('carries the declared no_data recovery hint on both consumption surfaces', async () => {
@@ -369,6 +635,41 @@ describe('getTradeBalanceTool', () => {
     expect(text).toContain('reason rate_limited');
   });
 
+  it('fails with upstream_unavailable when each period failed in one flow on a server error', async () => {
+    fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
+      Promise.resolve({
+        records: [
+          {
+            ...(flowCode === 'X' ? EXPORT_RECORD : IMPORT_RECORD),
+            period: flowCode === 'X' ? '2023' : '2022',
+          },
+        ],
+        totalCount: 1,
+        truncated: false,
+        failedPeriods: [
+          { period: flowCode === 'X' ? '2022' : '2023', reason: 'upstream_unavailable' },
+        ],
+      }),
+    );
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2022', '2023'],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        message: expect.stringMatching(/^No requested period was served\. .*2022.*2023/),
+        data: {
+          reason: 'upstream_unavailable',
+          retryable: true,
+          recovery: { hint: expect.any(String) },
+        },
+      },
+    });
+    expect(textOf(result)).toContain('reason upstream_unavailable');
+  });
+
   it('includes mirrorCaveat in output', async () => {
     const ctx = createMockContext({ errors: getTradeBalanceTool.errors });
     const input = getTradeBalanceTool.input.parse({
@@ -438,7 +739,22 @@ describe('getTradeBalanceTool partner-only reporters and frequency inference', (
     [840, { referenceStatus: 'reporter', name: 'USA' }],
     [
       250,
-      { referenceStatus: 'partner_only', name: 'Metropolitan France', suggestedReporterCode: 251 },
+      {
+        referenceStatus: 'partner_only',
+        name: 'Metropolitan France',
+        suggestedReporterCode: 251,
+        suggestionBasis: 'iso3',
+      },
+    ],
+    [
+      158,
+      {
+        referenceStatus: 'partner_only',
+        name: 'Taiwan, Province of China',
+        suggestedReporterCode: 490,
+        suggestionBasis: 'published_under',
+        suggestedReporterName: 'Other Asia, nes',
+      },
     ],
     [0, { referenceStatus: 'partner_only', name: 'World' }],
   ]);
@@ -503,6 +819,93 @@ describe('getTradeBalanceTool partner-only reporters and frequency inference', (
     );
     expect(textOf(result)).toContain(hint);
   });
+
+  it('fails with partner_only_reporter naming the code UN Comtrade publishes reporter 158 under', async () => {
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 158,
+      period: ['2023'],
+    });
+    const sentence =
+      'Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.';
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.NotFound,
+        message: `No trade data found for reporter 158, periods [2023]. ${sentence}`,
+        data: {
+          reason: 'partner_only_reporter',
+          suggestedReporterCode: 490,
+          recovery: { hint: 'Retry with reporter_code 490.' },
+        },
+      },
+    });
+    expect(textOf(result)).toContain(sentence);
+  });
+
+  it('names partner_code 490 in no_data for partner 158, replacing the availability hint', async () => {
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      partner_code: 158,
+      period: ['2023'],
+    });
+    const sentence =
+      'UN Comtrade publishes the trade of partner 158 (Taiwan, Province of China) under 490 (Other Asia, nes). Retry with partner_code 490.';
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.NotFound,
+        message: `No trade data found for reporter 840 and partner 158, periods [2023]. ${sentence}`,
+        data: {
+          reason: 'no_data',
+          suggestedPartnerCode: 490,
+          recovery: { hint: 'Retry with partner_code 490.' },
+        },
+      },
+    });
+    const text = textOf(result);
+    expect(text).toContain(sentence);
+    expect(text).not.toContain('comtrade_get_data_availability');
+  });
+
+  it('names both counterparts when the reporter and the partner each have one', async () => {
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 158,
+      partner_code: 250,
+      period: ['2023'],
+    });
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        message:
+          'No trade data found for reporter 158 and partner 250, periods [2023]. Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490. Partner 250 (Metropolitan France) shares its ISO-3 identity with 251. Retry with partner_code 251.',
+        data: {
+          reason: 'partner_only_reporter',
+          suggestedReporterCode: 490,
+          suggestedPartnerCode: 251,
+          recovery: { hint: 'Retry with reporter_code 490 and partner_code 251.' },
+        },
+      },
+    });
+  });
+
+  it.each([
+    [842, 'No trade data found for reporter 842 and partner 10, periods [2022, 2023]', 'no_data'],
+    [
+      250,
+      'No trade data found for reporter 250 and partner 10, periods [2022, 2023]. Reporter 250 (Metropolitan France) is a partner-only code in UN Comtrade reference data; reporter 251 shares its ISO-3 identity. Retry with reporter_code 251.',
+      'partner_only_reporter',
+    ],
+  ] as const)(
+    'names a bilateral partner in the empty-result message for reporter %d',
+    async (reporter_code, message, reason) => {
+      const result = await runToolContract(getTradeBalanceTool, {
+        reporter_code,
+        partner_code: 10,
+        period: ['2022', '2023'],
+      });
+      expect(result.structuredContent).toMatchObject({
+        error: { code: JsonRpcErrorCode.NotFound, message, data: { reason } },
+      });
+      expect(textOf(result)).toContain(`reporter ${reporter_code} and partner 10`);
+    },
+  );
 
   it('names served periods that answered empty when the others failed', async () => {
     fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
@@ -645,4 +1048,73 @@ describe('getTradeBalanceTool on the keyless data service', () => {
     expect(starts).toEqual(['X 2021', 'M 2021']);
     expect(atSettle).toEqual({ starts, timers: 0 });
   });
+
+  it('serves the period both flows completed when one flow answers 503 for another, relaying none of the page', async () => {
+    const page =
+      '<!DOCTYPE html><html><body><h1>503</h1><p>edge-proxy-7.internal.example</p></body></html>';
+    fetchMock.mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      const flowCode = url.searchParams.get('flowCode');
+      const period = url.searchParams.get('period');
+      if (flowCode === 'M' && period === '2022')
+        return new Response(page, { status: 503, headers: { 'content-type': 'text/html' } });
+      return Response.json({
+        data: [
+          {
+            ...(flowCode === 'X' ? EXPORT_RECORD : IMPORT_RECORD),
+            period,
+            motCode: 0,
+            customsCode: 'C00',
+            partner2Code: 0,
+          },
+        ],
+      });
+    });
+    const run = runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2021', '2022'],
+    });
+    await vi.runAllTimersAsync();
+    const result = await run;
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      periods: [{ period: '2021', balanceUsd: -1_000_000_000 }],
+      unservedPeriods: ['2022'],
+      notice: expect.stringMatching(/2022.*503|503.*2022/),
+    });
+    expect((result.structuredContent as { periods: unknown[] }).periods).toHaveLength(1);
+    const text = textOf(result);
+    expect(text).toContain('**Unserved periods:** 2022. Query them separately.');
+    expect(text).not.toContain('Period: 2022');
+    for (const fragment of ['DOCTYPE', '<h1>', 'edge-proxy-7'])
+      expect(JSON.stringify(result)).not.toContain(fragment);
+  });
+
+  it.each([
+    ['M', 'X'],
+    ['X', 'M'],
+  ])(
+    'ranks the %s flow’s rate limit above the %s flow’s server error, though the server error ends first',
+    async (limitedFlow) => {
+      fetchMock.mockImplementation(async (input) =>
+        new URL(String(input)).searchParams.get('flowCode') === limitedFlow
+          ? new Response('{}', { status: 429, headers: { 'retry-after': '6' } })
+          : new Response('<!DOCTYPE html><html><body>503</body></html>', {
+              status: 503,
+              headers: { 'content-type': 'text/html' },
+            }),
+      );
+      const run = runToolContract(getTradeBalanceTool, { reporter_code: 840, period: ['2022'] });
+      await vi.runAllTimersAsync();
+      const result = await run;
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.RateLimited,
+          message:
+            'No requested period was served. Period 2022 was rate-limited; wait 6 seconds before requesting it again.',
+          data: { reason: 'rate_limited', retryAfter: 6 },
+        },
+      });
+    },
+  );
 });

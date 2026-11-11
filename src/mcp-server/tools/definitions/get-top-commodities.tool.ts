@@ -11,10 +11,16 @@ import {
   periodFrequency,
   periodSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
-import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
+import { counterpartNotices } from '@/mcp-server/tools/reporter-notice.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 import { retrieveCommodityRanking, singlePeriodFailure } from './commodity-ranking.js';
+
+/**
+ * "Commodities not specified according to kind" at each aggregation level: the only such code at
+ * that level in every HS edition (H0–H6).
+ */
+const RESIDUAL_CODE = { 2: '99', 4: '9999' } as const;
 
 export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
   title: 'Get Top Trade Commodities',
@@ -56,6 +62,14 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       code: JsonRpcErrorCode.RateLimited,
       when: 'With TOTAL or the HS reference unavailable, UN Comtrade rate-limited the aggregate fallback through its retries.',
       recovery: 'Wait the number of seconds the error states, then retry the ranking.',
+      retryable: true,
+      thrownBy: 'service',
+    },
+    {
+      reason: 'upstream_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'With TOTAL or the HS reference unavailable, the aggregate fallback hit a UN Comtrade server error or network failure through its retries.',
+      recovery: 'Wait a minute and retry the same call.',
       retryable: true,
       thrownBy: 'service',
     },
@@ -106,6 +120,12 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
             cmdCode: z.string().describe('HS commodity code.'),
             cmdDesc: z.string().describe('Commodity description.'),
             aggrLevel: z.number().describe('HS aggregation level (2 or 4).'),
+            residual: z
+              .boolean()
+              .optional()
+              .describe(
+                'True on the residual code for commodities not specified according to kind (99 for chapters, 9999 for headings): trade not allocated to a code at this level, ranked and shared like any other row. Absent on every other row.',
+              ),
             primaryValueUsd: z
               .number()
               .optional()
@@ -152,7 +172,12 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
   }),
 
   enrichment: {
-    notice: z.string().optional().describe('Recovery hint when no data is returned.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Recovery hint when no data is returned, naming the code to query instead of a partner-only reporter_code (250 → 251, 158 → 490) or of a partner_code with a reporter-valid counterpart (840 → 842, 158 → 490); or what the residual row (99 or 9999) holds when it is on the returned page.',
+      ),
   },
 
   async handler(input, ctx) {
@@ -183,9 +208,9 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
 
     if (result.records.length === 0) {
       const status = reference.getReporterStatus(input.reporter_code);
-      const partnerOnly = partnerOnlyReporterNotice(input.reporter_code, status);
+      const counterparts = counterpartNotices(reference, input.reporter_code, input.partner_code);
       ctx.enrich.notice(
-        `No commodity data found for reporter ${input.reporter_code}, flow=${input.flow_code}, period=${input.period}. ${partnerOnly ?? 'Use comtrade_get_data_availability to verify data exists.'}`,
+        `No commodity data found for reporter ${input.reporter_code}, flow=${input.flow_code}, period=${input.period}. ${counterparts.length > 0 ? counterparts.join(' ') : 'Use comtrade_get_data_availability to verify data exists.'}`,
       );
       return {
         commodities: [],
@@ -213,22 +238,39 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     const totalValueUsd = sorted.reduce((sum, r) => sum + (r.primaryValue ?? 0), 0);
     const totalCommodities = sorted.length;
     const valuesKnown = sorted.every((row) => row.primaryValue != null);
-    const sliced = sorted.slice(0, input.limit);
+    const residualCode = RESIDUAL_CODE[input.aggr_level];
+    const commodities = sorted.slice(0, input.limit).map((r, i) => ({
+      ...(result.coverageComplete && valuesKnown && { rank: i + 1 }),
+      cmdCode: r.cmdCode,
+      cmdDesc: r.cmdDesc,
+      aggrLevel: r.aggrLevel ?? input.aggr_level,
+      ...(r.cmdCode === residualCode && { residual: true }),
+      ...(r.primaryValue != null && { primaryValueUsd: r.primaryValue }),
+      ...(result.coverageComplete &&
+        result.denominatorValueUsd != null &&
+        result.denominatorValueUsd > 0 &&
+        r.primaryValue != null && {
+          sharePercent: Number(((r.primaryValue / result.denominatorValueUsd) * 100).toFixed(2)),
+        }),
+    }));
+    const residual = commodities.find((row) => row.residual);
+    if (residual) {
+      const figures = [
+        ...(residual.primaryValueUsd != null
+          ? [`${residual.primaryValueUsd.toLocaleString()} USD`]
+          : []),
+        ...(residual.sharePercent != null ? [`${residual.sharePercent}% of matching TOTAL`] : []),
+      ];
+      const lead = `Code ${residual.cmdCode}${figures.length > 0 ? ` (${figures.join(', ')})` : ''} holds trade not allocated to a ${input.aggr_level === 2 ? 'chapter' : 'heading'}, not a product category`;
+      ctx.enrich.notice(
+        input.aggr_level === 2
+          ? `${lead}.`
+          : `${lead}; that includes chapter-level trade the reporter withholds from headings, so 9999 can exceed chapter 99.`,
+      );
+    }
 
     return {
-      commodities: sliced.map((r, i) => ({
-        ...(result.coverageComplete && valuesKnown && { rank: i + 1 }),
-        cmdCode: r.cmdCode,
-        cmdDesc: r.cmdDesc,
-        aggrLevel: r.aggrLevel ?? input.aggr_level,
-        ...(r.primaryValue != null && { primaryValueUsd: r.primaryValue }),
-        ...(result.coverageComplete &&
-          result.denominatorValueUsd != null &&
-          result.denominatorValueUsd > 0 &&
-          r.primaryValue != null && {
-            sharePercent: Number(((r.primaryValue / result.denominatorValueUsd) * 100).toFixed(2)),
-          }),
-      })),
+      commodities,
       reporterCode: input.reporter_code,
       reporterDesc,
       period: input.period,
@@ -269,6 +311,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       lines.push(
         `\n**${c.rank == null ? '' : `#${c.rank}. `}${c.cmdCode}** (aggrLevel: ${c.aggrLevel}) — ${c.cmdDesc}`,
       );
+      if (c.residual) lines.push('  Residual: true');
       if (c.primaryValueUsd != null) {
         lines.push(`  Value: $${c.primaryValueUsd.toLocaleString()} USD`);
       }
