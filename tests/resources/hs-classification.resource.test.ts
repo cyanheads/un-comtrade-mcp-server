@@ -151,6 +151,8 @@ describe('hsClassificationResource', () => {
     expect(uris).toContain('comtrade://hs-classification/4');
     expect(uris).toContain('comtrade://hs-classification/6');
     for (const r of listing.resources) {
+      // resources/list entries carry a title only when the entry sets one.
+      expect(r).toHaveProperty('title', 'Comtrade HS Classification');
       expect(r).toHaveProperty('name');
       expect(r).toHaveProperty('mimeType');
       expect(r).toHaveProperty('description');

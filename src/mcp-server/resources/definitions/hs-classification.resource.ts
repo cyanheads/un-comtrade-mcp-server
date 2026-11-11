@@ -66,6 +66,7 @@ export const hsClassificationResource = resource('comtrade://hs-classification/{
     resources: VALID_LEVELS.map((level) => ({
       uri: `comtrade://hs-classification/${level}`,
       name: `comtrade-hs-classification-${level}`,
+      title: 'Comtrade HS Classification',
       description: `HS commodity codes at ${level === 2 ? 'chapter' : level === 4 ? 'heading' : 'subheading'} level (${level}-digit).`,
       mimeType: 'application/json',
     })),
