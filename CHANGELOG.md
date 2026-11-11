@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-11-11
+
+A UN Comtrade server error or network failure on one period now lists that period in unservedPeriods as upstream_unavailable instead of failing the call; country and commodity lookups rank exact matches first, balance rejects overlapping commodity codes, and Taiwan resolves to its trade code 490.
+
 ## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-11-05
 
 Startup survives malformed reference rows, keyless calls pace to UN Comtrade's limit and disclose unserved periods, services trade gains converted EB10/EB02 series, and partner-only reporter codes get actionable notices.
