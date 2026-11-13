@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "un-comtrade-mcp-server",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "UN Comtrade international trade statistics via MCP. Country/HS lookups, flows, balances, rankings.",
   "author": {
     "name": "cyanheads"
