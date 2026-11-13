@@ -31,7 +31,7 @@ export interface CountryEntry {
 }
 
 /**
- * A country lookup match. `standsInFor` is the matched entry whose trade UN Comtrade publishes
+ * A country lookup match. `standsInFor` is the matched entry whose goods trade UN Comtrade publishes
  * under this one (490 Other Asia, nes for 158 Taiwan, Province of China).
  */
 export type CountryMatch = CountryEntry & { standsInFor?: CountryEntry };
@@ -39,7 +39,7 @@ export type CountryMatch = CountryEntry & { standsInFor?: CountryEntry };
 /**
  * The reporter-valid code to query instead of a partner-only one, by basis: `iso3`, the entry
  * sharing its ISO-3 identity, current before expired (250 Metropolitan France → 251 France);
- * `published_under`, the code UN Comtrade publishes the entity's trade under, which neither
+ * `published_under`, the code UN Comtrade publishes the entity's goods trade under, which neither
  * catalog links to it (158 → 490 Other Asia, nes).
  */
 type ReporterSuggestion =
@@ -154,16 +154,13 @@ export type ServiceCategoryListing =
   | { status: 'tagged'; categories: ServiceCategory[] }
   | { status: 'untagged'; categories: EbopsCategory[]; unavailableCatalogs: string[] };
 
+/** Explicit UN Comtrade HS editions, in membership tag order. */
+export const HS_EDITIONS = ['H0', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'] as const;
+
 /** Goods catalog names supported by UN Comtrade's reference endpoint. */
 export const COMMODITY_CLASSIFICATIONS = [
   'HS',
-  'H0',
-  'H1',
-  'H2',
-  'H3',
-  'H4',
-  'H5',
-  'H6',
+  ...HS_EDITIONS,
   'SS',
   'S1',
   'S2',
@@ -174,9 +171,13 @@ export const COMMODITY_CLASSIFICATIONS = [
 /** A commodity catalog entry retaining its native aggregation level. */
 export interface CommodityCode {
   aggrLevel: number;
+  /** Edition catalogs listing this code, when default-HS enrichment succeeds. */
+  editions?: (typeof HS_EDITIONS)[number][];
   id: string;
   isLeaf: boolean;
   parent?: string;
+  /** Immediate parent description from the discovery catalog for codes absent from H6. */
+  parentDescription?: string;
   recommendedQueryCode: string;
   text: string;
 }

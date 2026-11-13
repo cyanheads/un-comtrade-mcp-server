@@ -14,6 +14,7 @@ import { getDataAvailabilityTool } from './mcp-server/tools/definitions/get-data
 import { getServicesTradeTool } from './mcp-server/tools/definitions/get-services-trade.tool.js';
 import { getTopCommoditiesTool } from './mcp-server/tools/definitions/get-top-commodities.tool.js';
 import { getTopPartnersTool } from './mcp-server/tools/definitions/get-top-partners.tool.js';
+import { getTopReportersTool } from './mcp-server/tools/definitions/get-top-reporters.tool.js';
 import { getTradeBalanceTool } from './mcp-server/tools/definitions/get-trade-balance.tool.js';
 import { getTradeFlowsTool } from './mcp-server/tools/definitions/get-trade-flows.tool.js';
 import { listServiceCategoriesTool } from './mcp-server/tools/definitions/list-service-categories.tool.js';
@@ -45,6 +46,7 @@ await createApp({
     getTradeFlowsTool,
     getTradeBalanceTool,
     getTopPartnersTool,
+    getTopReportersTool,
     getTopCommoditiesTool,
     getDataAvailabilityTool,
     getServicesTradeTool,

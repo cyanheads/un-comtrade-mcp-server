@@ -6,7 +6,6 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
-  codeSchema,
   frequencySchema,
   m49Schema,
   periodSchema,
@@ -75,7 +74,10 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
         .pipe(z.enum(['C', 'S']))
         .default('C')
         .describe('Trade type: C=commodities (goods), S=services.'),
-      classification: codeSchema
+      classification: z
+        .string()
+        .trim()
+        .toUpperCase()
         .regex(
           /^(?:[A-Z][A-Z0-9]*)?$/,
           'Use a classification identifier containing letters and digits, such as HS, B4, B5, or EB10.',
@@ -131,7 +133,10 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
   }),
 
   enrichment: {
-    notice: z.string().optional().describe('Recovery hint when no availability records are found.'),
+    notice: z
+      .string()
+      .optional()
+      .describe('Recovery hint when no records match or the offset is past the end.'),
   },
 
   async handler(input, ctx) {
@@ -159,6 +164,7 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
           : partnerOnlyReporterNotice(
               input.reporter_code,
               getComtradeReferenceService().getReporterStatus(input.reporter_code),
+              input.type_code,
             );
       ctx.enrich.notice(
         `No data availability records found` +
@@ -175,6 +181,11 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
       };
     }
 
+    if (input.offset >= records.length) {
+      ctx.enrich.notice(
+        `This offset is past the end of the matching datasets. The largest offset that returns a row is ${records.length - 1}.`,
+      );
+    }
     const ordered = records.toSorted(
       (a, b) =>
         a.reporterCode - b.reporterCode ||
@@ -215,9 +226,6 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
     ];
     if (result.nextOffset !== undefined) {
       lines.push(`Continue with offset=${result.nextOffset}, keeping the same filters and limit.`);
-    }
-    if (result.totalDatasets > 0 && result.shown === 0) {
-      lines.push('This offset is past the end of the matching datasets. Use a smaller offset.');
     }
     for (const d of result.datasets) {
       lines.push(

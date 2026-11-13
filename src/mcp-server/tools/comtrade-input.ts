@@ -106,6 +106,18 @@ export function periodsMatchFrequency(input: FrequencyInput): boolean {
 export const GOODS_CODE_SHAPE_MESSAGE =
   'Use HS codes with 2, 4 or 6 digits or legacy 9999AA under an HS classification; SITC codes (up to 5 characters, optional trailing X) need classification S1–S4 or SS. TOTAL and classification-specific AG selectors are supported.';
 
+/** Rejection for rankings that accept only a single commodity at a time. */
+export const SINGLE_GOODS_CODE_SHAPE_MESSAGE =
+  'Use TOTAL or a single HS or SITC code. HS codes have 2, 4 or 6 digits or are legacy 9999AA; SITC codes (up to 5 characters, optional trailing X) need classification S1–S4 or SS. Use comtrade_get_top_commodities to rank products.';
+
+/** Validate a normalized ranking selector without allowing level-wide AG selectors. */
+export function singleGoodsCodeMatchesClassification(input: {
+  classification?: string | undefined;
+  cmd_code?: string | undefined;
+}): boolean {
+  return !input.cmd_code?.startsWith('AG') && goodsCodesMatchClassification(input);
+}
+
 /** Validate goods code shape by classification while leaving reference membership open. */
 export function goodsCodesMatchClassification(input: {
   classification?: string | undefined;

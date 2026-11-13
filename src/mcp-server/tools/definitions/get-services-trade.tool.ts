@@ -13,7 +13,10 @@ import {
   m49Schema,
   servicesClassificationSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
-import { counterpartNotices } from '@/mcp-server/tools/reporter-notice.js';
+import {
+  counterpartNotices,
+  mixedPartnerBreakdownNotice,
+} from '@/mcp-server/tools/reporter-notice.js';
 import {
   describePeriodFailures,
   getComtradeDataService,
@@ -82,12 +85,16 @@ async function emptyResultNotice(
   const sentences = [
     `No services trade records found for reporter ${input.reporter_code}, flow=${input.flow_code}, periods=[${servedPeriods.join(', ')}].`,
   ];
+  const taiwanPartner = input.partner_code === 490;
+  if (taiwanPartner) sentences.push('Use partner_code 158 for Taiwan services.');
   const counterparts = counterpartNotices(
     getComtradeReferenceService(),
     input.reporter_code,
     input.partner_code,
+    'S',
   );
-  if (counterparts.length > 0) return [...sentences, ...counterparts].join(' ');
+  sentences.push(...counterparts);
+  if (counterparts.length > 0 && !taiwanPartner) return sentences.join(' ');
   if (classification !== 'EB')
     sentences.push(
       `${classification} serves UN Comtrade's conversions from other schemes; rows reported in ${classification} itself are served under classification "EB".`,
@@ -210,7 +217,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     partner_code: m49Schema
       .optional()
       .describe(
-        'M49 partner code. Use 0 for all partners combined. Omit for a disaggregated by-partner breakdown.',
+        'M49 partner code. Use 0 for all partners combined (World). Omitting it can return World alongside the partner breakdown.',
       ),
     service_code: codeSchema
       .optional()
@@ -254,7 +261,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       .string()
       .optional()
       .describe(
-        "Why data is missing: periods that were rate limited (with the wait), failed on a UN Comtrade server error (with the HTTP status) or network failure, or ran out of time, and, when no records are returned, the requested code's EB scheme or the code to query instead of a partner-only reporter_code (250 → 251, 158 → 490) or of a partner_code with a reporter-valid counterpart (840 → 842, 158 → 490), with the next call to make.",
+        'World overlap warnings, period failures, and guidance for empty results, including EB scheme coverage, ISO-3 counterpart codes, or partner_code 158 for Taiwan services.',
       ),
   },
 
@@ -303,6 +310,8 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     if (unservedPeriods.length > 0) ctx.enrich({ unservedPeriods });
 
     const notices = result.failedPeriods ? [describePeriodFailures(result.failedPeriods)] : [];
+    const mixedBreakdown = mixedPartnerBreakdownNotice(input.partner_code, result.records);
+    if (mixedBreakdown) notices.push(mixedBreakdown);
     if (result.records.length === 0) {
       notices.push(
         await emptyResultNotice(

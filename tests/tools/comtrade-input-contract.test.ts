@@ -19,6 +19,7 @@ import {
 } from '@/mcp-server/tools/comtrade-input.js';
 import { getDataAvailabilityTool } from '@/mcp-server/tools/definitions/get-data-availability.tool.js';
 import { getServicesTradeTool } from '@/mcp-server/tools/definitions/get-services-trade.tool.js';
+import { getTopCommoditiesTool } from '@/mcp-server/tools/definitions/get-top-commodities.tool.js';
 import { getTopPartnersTool } from '@/mcp-server/tools/definitions/get-top-partners.tool.js';
 import { getTradeBalanceTool } from '@/mcp-server/tools/definitions/get-trade-balance.tool.js';
 import { getTradeFlowsTool } from '@/mcp-server/tools/definitions/get-trade-flows.tool.js';
@@ -180,6 +181,60 @@ it('validates classification-specific goods shapes without reference membership 
     ).toBe(true);
   for (const code of ['99', '9999', '999999', 'TOTAL', 'AG6'])
     expect(getTradeFlowsTool.input.safeParse({ ...common, cmd_code: [code] }).success).toBe(true);
+});
+
+it('keeps AG selectors available to trade tools but rejects them in partner rankings', () => {
+  const query = { reporter_code: 842, flow_code: 'X', period: '2022', cmd_code: ' ag6 ' };
+  expect(
+    getTradeFlowsTool.input.parse({ ...query, period: [query.period], cmd_code: [query.cmd_code] })
+      .cmd_code,
+  ).toEqual(['AG6']);
+  expect(getTopPartnersTool.input.safeParse(query).error?.issues[0]?.path).toEqual(['cmd_code']);
+});
+
+/** Measure repeated calls below the timer resolution, keeping the least per-call CPU cost. */
+function leastCpuMicrosPerCall(run: () => void, repeats: number): number {
+  let least = Infinity;
+  for (let trial = 0; trial < 3; trial++) {
+    const start = process.threadCpuUsage();
+    for (let index = 0; index < repeats; index++) run();
+    const used = process.threadCpuUsage(start);
+    least = Math.min(least, (used.user + used.system) / repeats);
+  }
+  return least;
+}
+
+it('bounds parent-code validation CPU time for digit runs and line breaks', { timeout: 0 }, () => {
+  const input = { reporter_code: 842, flow_code: 'X', period: '2022', aggr_level: 6 };
+  const scenarios = [
+    { shape: (size: number) => '8'.repeat(size), maxSize: 320_000 },
+    { shape: (size: number) => `${'§1 x'.repeat(size / 4)}\ny`, maxSize: 80_000 },
+    { shape: (size: number) => `1${'  \r\n'.repeat(size / 4)}1`, maxSize: 80_000 },
+  ];
+  for (const { shape, maxSize } of scenarios) {
+    const callAt = (size: number) => {
+      const args = { ...input, parent_code: shape(size) };
+      expect(getTopCommoditiesTool.input.safeParse(args).success).toBe(false);
+      return () => {
+        getTopCommoditiesTool.input.safeParse(args);
+      };
+    };
+    const baseline = callAt(5_000);
+    for (let size = 10_000; size <= maxSize; size *= 2) {
+      const current = callAt(size);
+      const bound = (4 * size) / 5_000;
+      let leastGrowth = Infinity;
+      let leastMicros = Infinity;
+      for (let trial = 0; trial < 3; trial++) {
+        const small = leastCpuMicrosPerCall(baseline, 64);
+        const large = leastCpuMicrosPerCall(current, Math.max(1, 320_000 / size));
+        leastGrowth = Math.min(leastGrowth, large / small);
+        leastMicros = Math.min(leastMicros, large);
+      }
+      expect(leastGrowth, `CPU growth at ${size} characters`).toBeLessThan(bound);
+      expect(leastMicros, `CPU time at ${size} characters`).toBeLessThan(50_000);
+    }
+  }
 });
 it('rejects malformed M49 reporter and partner codes while keeping unknown three-digit codes', () => {
   for (const reporter_code of [-1, 1.5, 99999])

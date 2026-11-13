@@ -388,6 +388,38 @@ describe('getTopPartnersTool upstream requests', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it.each(['   ', ' total ', '9999aa', '84', '8471', '847130'])(
+    'queries a single normalized HS selector for %j',
+    async (cmd_code) => {
+      const result = await runToolContract(getTopPartnersTool, { ...args, cmd_code });
+      expect(result.isError).not.toBe(true);
+      expect(requests[0]?.searchParams.get('cmdCode')).toBe(
+        cmd_code.trim().toUpperCase() || 'TOTAL',
+      );
+      expect(result.structuredContent).toMatchObject({ totalPartners: 1 });
+    },
+  );
+
+  it.each([
+    ...['AG2', 'AG4', 'AG6'].map((code) => ['HS', code] as const),
+    ...['AG1', 'AG2', 'AG3', 'AG4', 'AG5'].map((code) => ['S4', code] as const),
+  ])('rejects %s selector %s at cmd_code before retrieval', async (classification, code) => {
+    const cmd_code = ` ${code.toLowerCase()} `;
+    const input = getTopPartnersTool.input.safeParse({ ...args, classification, cmd_code });
+    expect(input.error?.issues[0]?.path).toEqual(['cmd_code']);
+    const result = await runToolContract(getTopPartnersTool, { ...args, classification, cmd_code });
+    expect(result.structuredContent).toMatchObject({
+      error: { code: JsonRpcErrorCode.InvalidParams },
+    });
+    for (const surface of [result.content, result.structuredContent]) {
+      const rendered = JSON.stringify(surface);
+      expect(rendered).toContain('TOTAL');
+      expect(rendered).toContain('single HS or SITC');
+      expect(rendered).toContain('comtrade_get_top_commodities');
+    }
+    expect(fetchFake).not.toHaveBeenCalled();
+  });
+
   it('requests the as-reported HS preview route across all partners when classification is omitted', async () => {
     const result = await getTopPartnersTool.handler(
       getTopPartnersTool.input.parse({ reporter_code: 842, flow_code: 'X', period: '2022' }),

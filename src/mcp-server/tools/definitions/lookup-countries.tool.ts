@@ -22,7 +22,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
         'Enter a country or area name or an ISO alpha-2/alpha-3 code, e.g. "Germany" or "DEU".',
       )
       .describe(
-        'Country or area to find: a name or name fragment, an official or common name, or an ISO alpha-2/alpha-3 code. Case, accents, and surrounding spaces are ignored. Examples: "Germany", "DEU", "DE", "south korea", "Turkiye".',
+        'Country or area to find by name, name fragment, official or common name, or ISO alpha-2/alpha-3 code. Case, accents and surrounding spaces are ignored. Name matching treats St and St. as Saint and accepts straight or curly apostrophes. Examples: "Germany", "DEU", "DE", "south korea", "Turkiye", "St. Lucia".',
       ),
     role: z
       .enum(['reporter', 'partner', 'any'])
@@ -34,7 +34,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
       .boolean()
       .default(true)
       .describe(
-        'Whether to include regional and economic groupings (e.g. EU, ASEAN). Set to false to return only individual countries; a grouping listed as the code a match’s trade is published under (490 Other Asia, nes for 158 Taiwan, Province of China) is kept.',
+        'Whether to include regional and economic groupings (e.g. EU, ASEAN). Set to false to return only individual countries and groupings under which a match’s goods trade is published (490 Other Asia, nes for 158 Taiwan, Province of China).',
       ),
   }),
 
@@ -79,7 +79,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
           .describe('A country or area entry with its Comtrade M49 code and identifiers.'),
       )
       .describe(
-        'Matching entries, plus entries sharing an ISO-3 code with a match and the code UN Comtrade publishes a match’s trade under (490 Other Asia, nes for 158 Taiwan, Province of China). Exact matches (a common name, ISO code, name, or official long-form name equal to the query) come before partial-name matches, and an entry a match pulls in ranks with that match. Within each rank: reporter-valid first, current before expired (entryExpiredDate before today), then name and code.',
+        'Matching entries, plus entries sharing an ISO-3 code with a match and the code under which UN Comtrade publishes a match’s goods trade (490 Other Asia, nes for 158 Taiwan, Province of China). Exact matches (a common name, ISO code, name, or official long-form name equal to the query) come before partial-name matches, and an entry a match pulls in ranks with that match. Within each rank, reporter-valid entries come first, then current before expired (entryExpiredDate before today), then name and code.',
       ),
     totalMatches: z.number().describe('Total number of matching entries.'),
   }),
@@ -89,7 +89,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
       .string()
       .optional()
       .describe(
-        'Recovery hint when no matches are found, echoing the query and suggesting alternatives; or, when UN Comtrade publishes a match’s trade under another code (158 Taiwan, Province of China under 490 Other Asia, nes), the code to query.',
+        'Recovery hint when no matches are found, or the goods and services codes to query for Taiwan (490 for goods reporter or partner and 158 for services partner).',
       ),
   },
 
@@ -98,7 +98,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
     const ref = getComtradeReferenceService();
 
     const matched = ref.searchCountries(input.query, input.role === 'any' ? undefined : input.role);
-    // A stand-in is the code a match's trade is published under, whatever its grouping flag.
+    // A goods stand-in survives the group filter.
     const results = input.include_groups
       ? matched
       : matched.filter((c) => !c.isGroup || c.standsInFor !== undefined);
@@ -106,7 +106,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
     const publishedUnder = results.flatMap(({ id, name, standsInFor }) =>
       standsInFor
         ? [
-            `UN Comtrade publishes the trade of ${standsInFor.id} (${escapeMarkdownInline(standsInFor.name)}) under ${id} (${escapeMarkdownInline(name)}), as reporter and as partner: query ${id} as reporter_code or partner_code.`,
+            `UN Comtrade publishes goods trade for ${standsInFor.id} (${escapeMarkdownInline(standsInFor.name)}) under ${id} (${escapeMarkdownInline(name)}). For goods, use ${id} as reporter_code or partner_code. For services, use ${standsInFor.id} as partner_code for Taiwan.`,
           ]
         : [],
     );

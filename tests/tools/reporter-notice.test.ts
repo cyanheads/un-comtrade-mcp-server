@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   counterpartNotices,
+  mixedPartnerBreakdownNotice,
   partnerCounterpartNotice,
   partnerOnlyReporterNotice,
 } from '@/mcp-server/tools/reporter-notice.js';
@@ -33,6 +34,21 @@ const NO_COUNTERPART =
   'is a partner-only code in UN Comtrade reference data and has no reporter-valid counterpart. Find a reporter with comtrade_lookup_countries using role "reporter".';
 
 describe('counterpart notices', () => {
+  it.each([
+    { selected: undefined, returned: [0, 156], warned: true },
+    { selected: undefined, returned: [0], warned: false },
+    { selected: undefined, returned: [156], warned: false },
+    { selected: undefined, returned: [], warned: false },
+    { selected: 0, returned: [0, 156], warned: false },
+    { selected: 156, returned: [0, 156], warned: false },
+  ])('warns only on mixed breakdowns ($selected, $returned)', ({ selected, returned, warned }) => {
+    const notice = mixedPartnerBreakdownNotice(
+      selected,
+      returned.map((partnerCode) => ({ partnerCode })),
+    );
+    expect(notice !== undefined).toBe(warned);
+  });
+
   // Names are the 2026-11-11 catalog's, trimmed as the reference index trims them.
   it.each<[number, ReporterStatus, string | undefined, string | undefined]>([
     [
@@ -128,6 +144,13 @@ describe('counterpart notices', () => {
       'Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.';
     const PARTNER_250 =
       'Partner 250 (Metropolitan France) shares its ISO-3 identity with 251. Retry with partner_code 251.';
+
+    it('applies ISO-3 counterpart guidance independently of the goods mapping in services', () => {
+      expect(counterpartNotices(reference, 158, 250, 'S')).toEqual([PARTNER_250]);
+      expect(counterpartNotices(reference, 250, 158, 'S')).toEqual([
+        'Reporter 250 (Metropolitan France) is a partner-only code in UN Comtrade reference data; reporter 251 shares its ISO-3 identity. Retry with reporter_code 251.',
+      ]);
+    });
 
     it.each<[string, number | undefined, number | undefined, string[]]>([
       ['the reporter sentence before the partner sentence', 158, 250, [REPORTER_158, PARTNER_250]],

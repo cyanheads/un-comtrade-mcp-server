@@ -247,6 +247,10 @@ it('bounded arrays serve their caps and name unserved inputs on both surfaces', 
   }
   for (const result of runs.slice(0, 2)) {
     expect(result.structuredContent).toMatchObject({ unservedCmdCodes: ['20'] });
+    expect(result.structuredContent).toHaveProperty(
+      'cmdCodesWithoutRecords',
+      codes.slice(0, 20).filter((code) => code !== '11'),
+    );
     expect(result.content).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -260,6 +264,148 @@ it('bounded arrays serve their caps and name unserved inputs on both surfaces', 
   for (const [params] of spy.mock.calls)
     if (params.cmdCode) expect(params.cmdCode.split(',')).toHaveLength(20);
 });
+it.each([
+  { selectors: ['11'], records: [], truncated: false, missing: ['11'] },
+  { selectors: ['11'], records: [], truncated: true, missing: undefined },
+  { selectors: [' '], records: [], truncated: false, missing: undefined },
+])(
+  'flows coverage distinguishes empty, truncated and default slices ($selectors, $truncated)',
+  async ({ selectors, records, truncated, missing }) => {
+    vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockResolvedValue({
+      records,
+      totalCount: truncated ? 500 : 0,
+      truncated,
+    });
+    const result = await runToolContract(getTradeFlowsTool, {
+      reporter_code: 842,
+      flow_code: 'X',
+      period: ['2022'],
+      cmd_code: selectors,
+    });
+    const text = JSON.stringify(result.content);
+    expect(result.structuredContent?.cmdCodesWithoutRecords).toEqual(missing);
+    expect(text.includes('**Commodity codes without records:** 11')).toBe(missing !== undefined);
+    expect(text).not.toContain('comtrade_search_commodities');
+  },
+);
+
+it.each([getTradeFlowsTool, getServicesTradeTool])(
+  '$name warns about World alongside the breakdown and preserves period and cap disclosures',
+  async (definition) => {
+    vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockResolvedValue({
+      records: [record, { ...record, partnerCode: 156, partnerDesc: 'China' }],
+      totalCount: 500,
+      truncated: true,
+      truncationHint: 'may be incomplete',
+      failedPeriods: [{ period: '2023', reason: 'upstream_unavailable', status: 503 }],
+    });
+    const result = await runToolContract(definition, {
+      reporter_code: 842,
+      flow_code: 'X',
+      period: ['2022', '2023'],
+    });
+    for (const surface of [result.structuredContent, result.content]) {
+      const data = JSON.stringify(surface);
+      expect(data).toContain('World (partner 0) overlaps the partner breakdown');
+      expect(data).toContain('503');
+      expect(data).toContain('may be incomplete');
+    }
+    expect(result.structuredContent).toMatchObject({ shown: 2, unservedPeriods: ['2023'] });
+  },
+);
+
+it('trade flows disclose missing served codes alongside the World warning and edition guidance', async () => {
+  vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockResolvedValue({
+    records: [
+      { ...record, classificationCode: 'H6', primaryValue: 0 },
+      { ...record, classificationCode: 'H6', partnerCode: 156 },
+    ],
+    totalCount: 2,
+    truncated: false,
+  });
+  const result = await runToolContract(getTradeFlowsTool, {
+    reporter_code: 842,
+    flow_code: 'X',
+    period: ['2022'],
+    cmd_code: [' ag2 ', '11', '15', '15'],
+  });
+  expect(result.structuredContent).toMatchObject({ cmdCodesWithoutRecords: ['15'] });
+  for (const surface of [result.structuredContent, result.content]) {
+    const data = JSON.stringify(surface);
+    expect(data).toContain('World (partner 0) overlaps the partner breakdown');
+    expect(data).toContain('comtrade_search_commodities');
+    expect(data).toContain('H6');
+  }
+  expect(JSON.stringify(result.content)).toContain('**Commodity codes without records:** 15');
+});
+
+it('balance checks both flows in retained periods and keeps the requested commodity list', async () => {
+  vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockImplementation(async (query) =>
+    query.flowCode === 'X'
+      ? {
+          records: [{ ...record, classificationCode: 'H6', primaryValue: 0 }],
+          totalCount: 1,
+          truncated: false,
+          failedPeriods: [{ period: '2023', reason: 'deadline_exceeded' }],
+        }
+      : {
+          records: [
+            { ...record, cmdCode: '12', classificationCode: 'H6' },
+            { ...record, period: '2023', cmdCode: '15', classificationCode: 'H5' },
+          ],
+          totalCount: 2,
+          truncated: false,
+        },
+  );
+  const result = await runToolContract(getTradeBalanceTool, {
+    reporter_code: 842,
+    period: ['2022', '2023', '2024'],
+    cmd_code: ['11', '12', '15'],
+  });
+  expect(result.structuredContent).toMatchObject({
+    cmdCodes: ['11', '12', '15'],
+    cmdCodesWithoutRecords: ['15'],
+    unservedPeriods: ['2023'],
+  });
+  for (const surface of [result.structuredContent, result.content]) {
+    const data = JSON.stringify(surface);
+    expect(data).toContain('comtrade_search_commodities');
+    expect(data).toContain('H6');
+    expect(data).toContain('2024 returned no export or import data');
+  }
+  expect(JSON.stringify(result.content)).toContain('**Commodity codes without records:** 15');
+});
+
+it.each([
+  { editions: ['H6', 'H5'], truncated: false, missing: ['15'] },
+  { editions: ['H6', undefined], truncated: false, missing: ['15'] },
+  { editions: ['HS', 'HS'], truncated: false, missing: ['15'] },
+  { editions: ['H6', 'H6'], truncated: true, missing: undefined },
+])(
+  'balance omits edition guidance for uncertain slices ($editions, $truncated)',
+  async ({ editions, truncated, missing }) => {
+    vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockImplementation(async (query) => {
+      const isImport = query.flowCode === 'M';
+      const classificationCode = editions[isImport ? 1 : 0];
+      return {
+        records: [
+          { ...record, ...(classificationCode === undefined ? {} : { classificationCode }) },
+        ],
+        totalCount: isImport && truncated ? 500 : 1,
+        truncated: isImport && truncated,
+      };
+    });
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 842,
+      period: ['2022'],
+      cmd_code: ['11', '15'],
+    });
+    expect(result.structuredContent?.cmdCodesWithoutRecords).toEqual(missing);
+    for (const surface of [result.structuredContent, result.content])
+      expect(JSON.stringify(surface)).not.toContain('comtrade_search_commodities');
+  },
+);
+
 it('authenticated access serves 12 periods for every period-batching tool', async () => {
   const spy = vi.spyOn(ComtradeDataService.prototype, 'periodsPerCall').mockReturnValue(12);
   const fetchSpy = vi
@@ -314,7 +460,7 @@ it.each([
   }
 });
 it('catalog searches serve oversized limits as exact pages that continue by nextOffset', async () => {
-  vi.spyOn(ComtradeReferenceService.prototype, 'searchHsCodes').mockReturnValue(
+  vi.spyOn(ComtradeReferenceService.prototype, 'searchCommodityCodes').mockResolvedValue(
     Array.from({ length: 220 }, (_, i) => ({
       id: String(i),
       text: 'test',
@@ -334,7 +480,8 @@ it('catalog searches serve oversized limits as exact pages that continue by next
   type Page = { limit: number; offset?: number };
   for (const [run, key, total, limit] of [
     [
-      (page: Page) => runToolContract(searchCommoditiesTool, { query: 'test', ...page }),
+      (page: Page) =>
+        runToolContract(searchCommoditiesTool, { query: 'test', classification: 'H6', ...page }),
       'matches',
       220,
       201,

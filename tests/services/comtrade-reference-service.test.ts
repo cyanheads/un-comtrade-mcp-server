@@ -500,8 +500,13 @@ describe('ComtradeReferenceService', () => {
       await expect(load()).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
       fetchMock.mockResolvedValueOnce(Response.json({ results: [] }));
       expect((await load()).size).toBe(0);
-      expect((await load()).size).toBe(0);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      if (kind === 'commodity') {
+        expect((await load()).has('8524')).toBe(true);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+      } else {
+        expect((await load()).size).toBe(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      }
     },
   );
 
@@ -1095,6 +1100,16 @@ function expectLinearGrowth(
 describe('catalog search ranking', () => {
   const hsRows = [
     { id: 'TOTAL', text: 'Total - All H6 commodities', aggrLevel: 0 },
+    { id: '151410', text: '151410 - Crude oil', aggrLevel: 6 },
+    { id: '270900', text: '270900 - Petroleum oils from bituminous minerals, crude', aggrLevel: 6 },
+    { id: '030617', text: '030617 - Crustaceans; frozen, shrimps and prawns', aggrLevel: 6 },
+    {
+      id: '870380',
+      text: '870380 - Vehicles with only electric motor for propulsion',
+      aggrLevel: 6,
+    },
+    { id: '28', text: '28 - Metals, compounds of rare earth', aggrLevel: 2 },
+    { id: '280530', text: '280530 - Earth-metals, rare; scandium and yttrium', aggrLevel: 6 },
     ...codedRows(RANKED_HS_TEXTS),
   ];
   const s4Rows = codedRows(RANKED_S4_TEXTS);
@@ -1132,6 +1147,38 @@ describe('catalog search ranking', () => {
       expect(new Set(eb), query).toEqual(new Set(substringMatches(RANKED_EB_ROWS, query, true)));
       expect(eb, query).toHaveLength(substringMatches(RANKED_EB_ROWS, query, true).length);
     }
+  });
+
+  it('leaves the EB matcher on contiguous descriptions', () => {
+    expect(ids(ref.searchEbopsCategories('passenger transport'))).toEqual(
+      substringMatches(RANKED_EB_ROWS, 'passenger transport', true),
+    );
+  });
+
+  it.each([
+    ['crude oil', ['151410', '270900']],
+    ['frozen shrimp', ['030617']],
+    ['shrimp shrimp', ['030617']],
+    ['electric vehicles', ['870380']],
+    ['rare earth', ['28', '280530']],
+  ])('places reordered terms last for %s', (query, expected) => {
+    const actual = ids(ref.searchHsCodes(query)).filter((id) =>
+      ['151410', '270900', '030617', '870380', '28', '280530'].includes(id),
+    );
+    expect(actual).toEqual(expected);
+  });
+
+  it('includes unordered description terms in SITC and keeps its level filter', async () => {
+    const service = initComtradeReferenceService(config, storage);
+    stubFetch({
+      'S4.json': {
+        results: [
+          { id: '0711', text: 'Coffee roasted', aggrlevel: 4 },
+          { id: '07111', text: 'Coffee, not roasted', aggrlevel: 5 },
+        ],
+      },
+    });
+    expect(ids(await service.searchCommodityCodes('roasted coffee', 'S4', 5))).toEqual(['07111']);
   });
 
   it.each(['0901.11', '0901 11', '0901-11', '09-01-11'])(
@@ -1271,6 +1318,42 @@ describe('catalog search ranking', () => {
   });
 
   describe('timing', () => {
+    it.each<[string, (size: number) => string, number]>([
+      [
+        'distinct terms',
+        (size) =>
+          Array.from(
+            { length: Math.floor(size / 8) },
+            (_, i) => `q${i.toString().padStart(6, '0')} `,
+          ).join(''),
+        5_000,
+      ],
+      ['digit-term text', (size) => `a ${'1'.repeat(size)}`, 5_000],
+      ['one long line ending in a break', (size) => `${'§1 x'.repeat(size / 4)}\ny`, 1_200],
+      ['breaks throughout', (size) => 'st\r\n'.repeat(size / 4), 1_200],
+    ])(
+      'bounds added commodity and country scanning for %s',
+      { timeout: 0 },
+      (_shape, queryOf, base) => {
+        for (const search of [
+          (query: string) => () => ref.searchHsCodes(query),
+          (query: string) => () => ref.searchCountries(query),
+        ]) {
+          expectLinearGrowth(
+            (size) => {
+              const run = search(queryOf(size));
+              return () => {
+                run();
+              };
+            },
+            base,
+            64,
+          );
+          expect(cpuMicrosPerCall(search(queryOf(base * 64)), 1)).toBeLessThan(100_000);
+        }
+      },
+    );
+
     it.each<[string, (size: number) => string]>([
       ['a digit run', (size) => '1'.repeat(size)],
       ['a dotted digit run', (size) => '1.'.repeat(size / 2)],
@@ -1545,6 +1628,15 @@ describe('country lookup by common, official, and accent-free names', () => {
     reporterRow(792, 'Türkiye', 'TR', 'TUR', '1900-01-01'),
     reporterRow(203, 'Czechia', 'CZ', 'CZE', '1993-01-01'),
     reporterRow(384, "Côte d'Ivoire", 'CI', 'CIV', '1900-01-01'),
+    reporterRow(678, 'Sao Tome and Principe', 'ST', 'STP', '1900-01-01'),
+    reporterRow(233, 'Estonia', 'EE', 'EST', '1900-01-01'),
+    reporterRow(144, 'Sri Lanka', 'LK', 'LKA', '1900-01-01'),
+    {
+      ...reporterRow(659, 'Saint Kitts and Nevis', 'KN', 'KNA', '1900-01-01'),
+      reporterNote: 'Federation of St. Kitts and Nevis',
+    },
+    reporterRow(662, 'Saint Lucia', 'LC', 'LCA', '1900-01-01'),
+    reporterRow(670, 'Saint Vincent and the Grenadines', 'VC', 'VCT', '1900-01-01'),
     reporterRow(784, 'United Arab Emirates', 'AE', 'ARE', '1900-01-01'),
     reporterRow(418, "Lao People's Dem. Rep.", 'LA', 'LAO', '1900-01-01'),
     reporterRow(104, 'Myanmar', 'MM', 'MMR', '1900-01-01'),
@@ -1654,6 +1746,39 @@ describe('country lookup by common, official, and accent-free names', () => {
   let ref: ReferenceService;
   const ids = (query: string, role?: 'reporter' | 'partner') =>
     ref.searchCountries(query, role).map((entry) => entry.id);
+
+  it('keeps literal country ISO queries ahead of original substrings', () => {
+    for (const query of ['ST', 'st']) {
+      expect(ids(query)[0]).toBe(678);
+      expect(ids(query)).toContain(233);
+    }
+    expect(ids('STP')).toEqual([678]);
+    expect(ids('ston')).toContain(233);
+    expect(ids('sri')).toContain(144);
+  });
+
+  it.each([
+    ['St Kitts', 659],
+    ['St. Lucia', 662],
+    ['St Vincent', 670],
+    ['Cote d’Ivoire', 384],
+    ['Cote d‘ivoire', 384],
+    ['Cote dʼivoire', 384],
+  ])('folds country name punctuation in %s', (query, code) => {
+    expect(ids(query)).toEqual([code]);
+  });
+
+  it('matches a normalized official note and preserves its display text', async () => {
+    const result = await runToolContract(lookupCountriesTool, {
+      query: 'Federation of Saint Kitts',
+    });
+    expect(result.structuredContent).toMatchObject({
+      matches: [
+        { id: 659, name: 'Saint Kitts and Nevis', note: 'Federation of St. Kitts and Nevis' },
+      ],
+    });
+    expect(JSON.stringify(result.content)).toContain('Federation of St. Kitts and Nevis');
+  });
 
   /** Least thread CPU time per call in microseconds, over several batches of `calls` calls. */
   function leastCpuPerCallUs(run: () => void, calls: number): number {
@@ -1898,7 +2023,7 @@ describe('published-under counterparts and catalog notes', () => {
     partnerRow(630, 'Puerto Rico ', 'PR', 'PRI', '1900-01-01'),
   ];
   const TAIWAN_NOTICE =
-    'UN Comtrade publishes the trade of 158 (Taiwan, Province of China) under 490 (Other Asia, nes), as reporter and as partner: query 490 as reporter_code or partner_code.';
+    'UN Comtrade publishes goods trade for 158 (Taiwan, Province of China) under 490 (Other Asia, nes). For goods, use 490 as reporter_code or partner_code. For services, use 158 as partner_code for Taiwan.';
   let ref: ReferenceService;
   const ids = (query: string, role?: 'reporter' | 'partner') =>
     ref.searchCountries(query, role).map((entry) => entry.id);

@@ -8,6 +8,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { goodsClassificationSchema } from '@/mcp-server/tools/comtrade-input.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
+import { HS_EDITIONS } from '@/services/comtrade-reference/types.js';
 
 /** Rejection for a query that is blank after trimming or holds no letter or digit ("-", "."). */
 const QUERY_MESSAGE =
@@ -16,7 +17,7 @@ const QUERY_MESSAGE =
 export const searchCommoditiesTool = tool('comtrade_search_commodities', {
   title: 'Search Commodity Codes',
   description:
-    'Find HS or SITC commodity codes by keyword, partial description, or code prefix in the selected classification; a code written with dots, spaces, or hyphens ("0901.11") matches 090111. Matches rank exact code first, then code prefix, whole-word description match, and other description matches. Returns descriptions, native aggregation levels, parents, leaf status, and recommendedQueryCode for subsequent trade queries. HS uses levels 2 (chapter), 4 (heading), and 6 (subheading); SITC uses levels 1–5. Select the edition matching the trade records when interpreting historical codes. Each page holds up to limit matches; continue with nextOffset using the same query, classification, and aggr_level.',
+    'Find HS or SITC commodity codes by keyword, description, or code prefix. A code written with dots, spaces, or hyphens ("0901.11") matches 090111. Exact codes, code prefixes and contiguous description matches rank first, followed by descriptions containing every query term in any order. Default HS searches include historical codes and report which edition catalogs list each code. Use a trade row’s classificationCode or comtrade_get_data_availability to identify the edition, then search that edition for its descriptions. Keyless goods queries use HS for as-reported data. Continue with nextOffset using the same query, classification, and aggr_level.',
   annotations: { readOnlyHint: true, openWorldHint: false },
 
   input: z.object({
@@ -72,6 +73,18 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
               .string()
               .optional()
               .describe('Parent commodity code in the selected classification.'),
+            editions: z
+              .array(z.enum(HS_EDITIONS))
+              .optional()
+              .describe(
+                'H0–H6 catalogs listing this code in edition order. Definitions may differ across editions. Available for default HS searches when edition catalogs load.',
+              ),
+            parentDescription: z
+              .string()
+              .optional()
+              .describe(
+                'Immediate parent description from the default HS discovery catalog, when the code is absent from H6 and the parent exists in the discovery catalog.',
+              ),
             isLeaf: z
               .boolean()
               .describe('Whether this code has no sub-codes (leaf node in the HS hierarchy).'),
@@ -84,7 +97,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
           .describe('A commodity entry from the selected catalog.'),
       )
       .describe(
-        'Commodity codes on this page matching the query in the selected classification, ranked exact code, code prefix, whole-word description match, then other description matches; ties keep catalog order.',
+        'Commodity codes on this page matching the query in the selected classification, ranked exact code, code prefix, whole-word description match, then other description matches for the contiguous query, then descriptions containing every term in any order. Ties keep catalog order.',
       ),
     totalMatches: z.number().describe('Total matching codes across all pages.'),
     shown: z.number().describe('Number of codes returned on this page.'),
@@ -99,12 +112,21 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
   }),
 
   enrichment: {
+    referenceNotice: z
+      .string()
+      .optional()
+      .describe(
+        'Unavailable HS edition catalog names when the discovery page is returned without edition enrichment.',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
         'Recovery hint when no codes match, matches remain past this page, or the offset is past the end. Absent otherwise.',
       ),
+  },
+  enrichmentTrailer: {
+    referenceNotice: { label: 'Reference notice' },
   },
 
   errors: [
@@ -149,7 +171,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
 
     if (total === 0) {
       ctx.enrich.notice(
-        `No ${input.classification} commodity codes matched "${escapeMarkdownInline(input.query)}"${input.aggr_level ? ` at aggr_level ${input.aggr_level}` : ''}. Try a different keyword, a shorter prefix, or remove the aggr_level filter.`,
+        `No ${input.classification} commodity codes matched "${escapeMarkdownInline(input.query)}"${input.aggr_level ? ` at aggr_level ${input.aggr_level}` : ''}. Try technical commodity terms like "soya beans", "bovine", or "photovoltaic", a shorter code prefix, or remove the aggr_level filter.`,
       );
     } else if (page.length === 0) {
       ctx.enrich.notice(
@@ -161,13 +183,26 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       );
     }
 
+    let matches = page;
+    if (input.classification === 'HS' && page.length > 0) {
+      const references = await ref.enrichHsPage(page, ctx.signal);
+      matches = references.matches;
+      if (references.unavailableCatalogs.length > 0) {
+        ctx.enrich({
+          referenceNotice: `HS edition enrichment unavailable. Could not load ${references.unavailableCatalogs.join(', ')}.`,
+        });
+      }
+    }
+
     return {
       classification: input.classification,
-      matches: page.map((h) => ({
+      matches: matches.map((h) => ({
         id: h.id,
         description: h.text,
         aggrLevel: h.aggrLevel,
         ...(h.parent && { parent: h.parent }),
+        ...(h.editions && { editions: h.editions }),
+        ...(h.parentDescription !== undefined && { parentDescription: h.parentDescription }),
         isLeaf: h.isLeaf,
         recommendedQueryCode: h.id,
       })),
@@ -202,6 +237,10 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       lines.push(
         `  Use in queries: \`${m.recommendedQueryCode}\` | Leaf: ${m.isLeaf ? 'Yes' : 'No'}`,
       );
+      if (m.editions) lines.push(`  HS editions: ${m.editions.join(', ') || 'None'}`);
+      if (m.parentDescription !== undefined) {
+        lines.push(`  Discovery parent description: ${m.parentDescription}`);
+      }
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

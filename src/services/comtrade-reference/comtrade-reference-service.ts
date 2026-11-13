@@ -8,7 +8,7 @@
 
 import { z } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
-import { serializationError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError, serializationError } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import {
   fetchWithTimeout,
@@ -32,6 +32,7 @@ import type {
 import {
   COMMODITY_CLASSIFICATIONS,
   EB_SCHEMES,
+  HS_EDITIONS,
   rawCountrySchema,
   rawEbopsSchema,
   rawHsSchema,
@@ -39,6 +40,7 @@ import {
 
 const REFERENCE_BASE = 'https://comtradeapi.un.org/files/v1/app/reference';
 const FETCH_TIMEOUT_MS = 30_000;
+const HS_ENRICHMENT_TIMEOUT_MS = 10_000;
 const commodityClassificationSchema = z.enum(COMMODITY_CLASSIFICATIONS);
 const quantityUnitSchema = z.object({
   qtyCode: z.number().int(),
@@ -85,6 +87,13 @@ function normalizeCountryText(text: string): string {
     .trim();
 }
 
+/** Additional comparison for already-folded catalog names and official notes. */
+function foldCountryName(text: string): string {
+  return text
+    .replace(/[’‘ʼ]/gu, "'")
+    .replace(/(?<![\p{L}\p{N}])st(?![\p{L}\p{N}])(?:\.(?![\p{L}\p{N}]))?/gu, 'saint');
+}
+
 /**
  * Common names UN Comtrade's catalogs do not carry, keyed by folded name. Every target is a
  * current entry valid as reporter and as partner. An alias applies only when no catalog name,
@@ -115,7 +124,7 @@ const COUNTRY_ALIASES = new Map(
 );
 
 /**
- * Partner-only codes whose trade UN Comtrade publishes under another code, as reporter and as
+ * Partner-only codes whose goods trade UN Comtrade publishes under another code, as reporter and as
  * partner, with no catalog field linking the two: no ISO code is shared and the target's note
  * names no entity. A row applies only while its target is an indexed reporter-valid entry.
  */
@@ -132,6 +141,7 @@ type CountryMatchTier = 0 | 1;
 /** One entry's folded fields: `exact` its ISO codes, name, and note; `texts` its name and note. */
 interface CountrySearchKeys {
   exact: string[];
+  foldedNames: string[];
   texts: string[];
 }
 
@@ -139,19 +149,29 @@ interface CountrySearchKeys {
 const countrySearchKeys = new WeakMap<CountryEntry, CountrySearchKeys>();
 
 /** The tier at which an entry's own fields match a folded query, or undefined when none does. */
-function countryMatchTier(entry: CountryEntry, query: string): CountryMatchTier | undefined {
+function countryMatchTier(
+  entry: CountryEntry,
+  query: string,
+  nameQuery: string,
+): CountryMatchTier | undefined {
   let keys = countrySearchKeys.get(entry);
   if (!keys) {
     const fold = (values: (string | undefined)[]) =>
       values.filter((value) => value !== undefined).map(normalizeCountryText);
+    const texts = fold([entry.name, entry.note]);
     keys = {
       exact: fold([entry.iso2, entry.iso3, entry.name, entry.note]),
-      texts: fold([entry.name, entry.note]),
+      texts,
+      foldedNames: texts.map(foldCountryName),
     };
     countrySearchKeys.set(entry, keys);
   }
-  if (keys.exact.includes(query)) return 0;
-  return keys.texts.some((text) => text.includes(query)) ? 1 : undefined;
+  if (keys.exact.includes(query) || (nameQuery !== '' && keys.foldedNames.includes(nameQuery))) {
+    return 0;
+  }
+  if (keys.texts.some((text) => text.includes(query))) return 1;
+  if (nameQuery !== '' && keys.foldedNames.some((text) => text.includes(nameQuery))) return 1;
+  return undefined;
 }
 
 /** Record `tier` for `key` unless it already holds a better (lower) one. */
@@ -209,23 +229,24 @@ function hasWholeWordMatch(text: string, needle: string, from: number): boolean 
 }
 
 /**
- * Catalog entries whose code starts with the query or whose description contains it, in four
- * tiers: exact code, code prefix, whole-word description match, other description match. Ties
- * keep catalog order, so offset pages walk one fixed order. Codes and descriptions compare
- * case-insensitively. With `stripCodeSeparators` (HS and SITC, whose codes never contain a
- * separator) a code-like query meets codes without its separators, while descriptions still match
- * it as typed. The query is read a fixed number of times and each description scan is bounded by
- * that description, so a call grows linearly with the query and with the catalog. An empty query
- * matches every code as a prefix, so the description scan never sees an empty needle.
+ * Catalog entries whose code starts with the query or whose description contains it. Exact code,
+ * code prefix, whole-word description match and other phrase matches rank first. Goods can also
+ * match on all terms. Ties keep catalog order so offset pages walk one fixed order. Codes and
+ * descriptions compare case-insensitively. A code-like goods query meets codes without its
+ * separators, while descriptions still match it as typed.
  */
 function rankCatalogMatches<T extends { id: string; text: string }>(
   entries: Iterable<T>,
   query: string,
-  { stripCodeSeparators = false } = {},
+  goods = false,
 ): T[] {
   const typed = query.toLowerCase();
-  const code = (stripCodeSeparators ? codeFromCodeLikeQuery(typed) : undefined) ?? typed;
-  const tiers: [T[], T[], T[], T[]] = [[], [], [], []];
+  const normalizedCode = goods ? codeFromCodeLikeQuery(typed) : undefined;
+  const code = normalizedCode ?? typed;
+  const words = goods && normalizedCode === undefined ? typed.trim().split(/\s+/u) : [];
+  const terms = words.length > 1 ? [...new Set(words)] : [];
+  const longestTerm = terms.reduce((length, term) => Math.max(length, term.length), 0);
+  const tiers: [T[], T[], T[], T[], T[]] = [[], [], [], [], []];
   for (const entry of entries) {
     const id = entry.id.toLowerCase();
     if (id === code) {
@@ -236,6 +257,14 @@ function rankCatalogMatches<T extends { id: string; text: string }>(
       const description = entry.text.toLowerCase();
       const at = description.indexOf(typed);
       if (at >= 0) tiers[hasWholeWordMatch(description, typed, at) ? 2 : 3].push(entry);
+      else if (
+        terms.length > 0 &&
+        longestTerm <= description.length &&
+        terms.length <= (description.length * (description.length + 1)) / 2 &&
+        terms.every((term) => description.includes(term))
+      ) {
+        tiers[4].push(entry);
+      }
     }
   }
   return tiers.flat();
@@ -414,7 +443,7 @@ export class ComtradeReferenceService {
     return index;
   }
 
-  /** Load a selected goods edition on demand. Cache completed successes only; each caller owns its cancellation. */
+  /** Load a goods edition on demand, leaving empty HS catalogs eligible for a later retry. */
   async getCommodityCodes(
     classification: string,
     signal?: AbortSignal,
@@ -442,8 +471,51 @@ export class ComtradeReferenceService {
         },
       ]),
     );
-    this.commoditiesByClassification.set(selected, index);
+    if (index.size > 0 || selected.startsWith('S')) {
+      this.commoditiesByClassification.set(selected, index);
+    }
     return index;
+  }
+
+  /** Enrich a nonempty discovery page using successful edition indexes within one deadline. */
+  async enrichHsPage(
+    page: CommodityCode[],
+    signal: AbortSignal,
+  ): Promise<{ matches: CommodityCode[]; unavailableCatalogs: string[] }> {
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(HS_ENRICHMENT_TIMEOUT_MS)]);
+    const loads = await Promise.allSettled(
+      HS_EDITIONS.map((edition) => this.getCommodityCodes(edition, deadline)),
+    );
+    signal.throwIfAborted();
+
+    for (const load of loads) {
+      if (
+        load.status === 'rejected' &&
+        ((load.reason instanceof Error && load.reason.name === 'AbortError') ||
+          (load.reason instanceof McpError &&
+            load.reason.code === JsonRpcErrorCode.RequestCancelled))
+      ) {
+        throw load.reason;
+      }
+    }
+    const unavailableCatalogs = HS_EDITIONS.filter((_, index) => {
+      const load = loads[index];
+      return load?.status === 'rejected' || load?.value.size === 0;
+    });
+    if (unavailableCatalogs.length > 0) return { matches: page, unavailableCatalogs };
+
+    const matches = page.map((match) => {
+      const editions = HS_EDITIONS.filter((_, index) => {
+        const load = loads[index];
+        return load?.status === 'fulfilled' && load.value.has(match.id);
+      });
+      const parentDescription =
+        !editions.includes('H6') && match.parent
+          ? this.hsByCode.get(match.parent)?.text
+          : undefined;
+      return { ...match, editions, ...(parentDescription !== undefined && { parentDescription }) };
+    });
+    return { matches, unavailableCatalogs };
   }
 
   /**
@@ -461,7 +533,7 @@ export class ComtradeReferenceService {
       aggrLevel === undefined || entry.aggrLevel === aggrLevel;
     if (classification === 'HS') return this.searchHsCodes(query).filter(atLevel);
     const codes = await this.getCommodityCodes(classification, signal);
-    return rankCatalogMatches(codes.values(), query, { stripCodeSeparators: true }).filter(atLevel);
+    return rankCatalogMatches(codes.values(), query, true).filter(atLevel);
   }
 
   /** Lazily load quantity units within a ten-second deadline. Unknown codes remain absent; -1 explicitly means unavailable. */
@@ -584,7 +656,7 @@ export class ComtradeReferenceService {
    * alias key, ISO-2/ISO-3 code, name, or catalog note equals the query, rank before partial ones,
    * where a name or note contains it; a common-name alias applies only when no catalog field
    * equals the query. Entries `withPulledInEntries` adds rank with the match that pulled them in;
-   * one pulled in as the code a match's trade is published under carries that match as
+   * one pulled in as the code a match's goods trade is published under carries that match as
    * `standsInFor`, also when the role filter leaves the match out. Within a rank: reporter-valid,
    * current before expired, name, then code. A query that folds to empty text (combining marks
    * alone) matches nothing.
@@ -593,9 +665,11 @@ export class ComtradeReferenceService {
     const q = normalizeCountryText(query);
     // Every name contains the empty string, so an empty key would match the whole catalog.
     if (q === '') return [];
+    // Bare ST is an ISO-2 query with its original name and note substring matches.
+    const nameQuery = q === 'st' ? '' : foldCountryName(q);
     const direct = new Map<CountryEntry, CountryMatchTier>();
     for (const entry of this.countriesByCode.values()) {
-      const tier = countryMatchTier(entry, q);
+      const tier = countryMatchTier(entry, q, nameQuery);
       if (tier !== undefined) direct.set(entry, tier);
     }
     const aliasCode = COUNTRY_ALIASES.get(q);
@@ -657,7 +731,7 @@ export class ComtradeReferenceService {
    * hyphenated code ("0901.11") compares without its separators.
    */
   searchHsCodes(query: string): HsCode[] {
-    return rankCatalogMatches(this.hsByCode.values(), query, { stripCodeSeparators: true });
+    return rankCatalogMatches(this.hsByCode.values(), query, true);
   }
 
   /** Search EBOPS categories by keyword or code, ranked by `rankCatalogMatches`; codes keep dots. */

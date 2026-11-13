@@ -132,12 +132,155 @@ describe('searchCommoditiesTool', () => {
     seedReferenceService();
     vi.stubGlobal(
       'fetch',
-      vi.fn<typeof fetch>().mockRejectedValue(new Error('Unexpected live fetch')),
+      vi
+        .fn<typeof fetch>()
+        .mockImplementation(async () => Response.json([{ id: 'TOTAL', text: 'Total' }])),
     );
   });
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('matches all commodity terms in any order', async () => {
+    const result = await runToolContract(searchCommoditiesTool, {
+      query: 'machines portable portable',
+      classification: 'HS',
+    });
+    expect(page(result).matches.map(({ id }) => id)).toEqual(['847130']);
+    expect(contentText(result)).toContain('**847130**');
+  });
+
+  it('renders ordered HS edition membership on both surfaces', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (request) => {
+      const edition = String(request).split('/').at(-1);
+      return Response.json([
+        { id: edition === 'H6.json' ? '09' : '847130', text: 'Edition description' },
+      ]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await runToolContract(searchCommoditiesTool, { query: '09' });
+    expect(page(result).matches).toMatchObject([{ id: '09', editions: ['H6'] }]);
+    expect(contentText(result)).toContain('HS editions: H6');
+    const historical = await runToolContract(searchCommoditiesTool, { query: '847130' });
+    expect(page(historical).matches).toMatchObject([
+      {
+        id: '847130',
+        editions: ['H0', 'H1', 'H2', 'H3', 'H4', 'H5'],
+        parent: '8471',
+        parentDescription: 'Automatic data processing machines and units thereof',
+      },
+    ]);
+    expect(contentText(historical)).toContain('HS editions: H0, H1, H2, H3, H4, H5');
+    expect(contentText(historical)).toContain(
+      'Discovery parent description: Automatic data processing machines and units thereof',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+
+  it('retains pagination when an edition fails or is empty and retries only those editions', async () => {
+    const failed = new Map<string, Response>([
+      ['H0.json', Response.json([])],
+      ['H6.json', new Response(null, { status: 404 })],
+    ]);
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (request) => {
+      const edition = String(request).split('/').at(-1) ?? '';
+      return failed.get(edition) ?? Response.json([{ id: '8471', text: 'Heading' }]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await runToolContract(searchCommoditiesTool, { query: '8471', limit: 1 });
+    const referenceNotice = 'HS edition enrichment unavailable. Could not load H0, H6.';
+    expect(page(result)).toMatchObject({
+      matches: [{ id: '8471' }],
+      totalMatches: 2,
+      nextOffset: 1,
+      shown: 1,
+    });
+    expect(page(result).matches[0]).not.toHaveProperty('editions');
+    expect(result.structuredContent).toMatchObject({
+      notice: expect.stringContaining('Showing 1 of 2'),
+      referenceNotice,
+    });
+    expect(contentText(result)).toContain(referenceNotice);
+    expect(contentText(result)).toContain('Showing 1 of 2');
+    failed.clear();
+    const continued = await runToolContract(searchCommoditiesTool, {
+      query: '8471',
+      limit: 1,
+      offset: 1,
+    });
+    expect(page(continued)).toMatchObject({
+      matches: [{ id: '847130', editions: [] }],
+      totalMatches: 2,
+      shown: 1,
+      offset: 1,
+    });
+    expect(page(continued)).not.toHaveProperty('nextOffset');
+    expect(continued.structuredContent).not.toHaveProperty('referenceNotice');
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    const pastEnd = await runToolContract(searchCommoditiesTool, { query: '8471', offset: 2 });
+    expect(pastEnd.structuredContent).not.toHaveProperty('referenceNotice');
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+  });
+
+  it('returns the default page after one deadline for hung editions', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(
+      async (_url, options) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const pending = runToolContract(searchCommoditiesTool, { query: '09' });
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await pending;
+    expect(result.structuredContent).toMatchObject({
+      matches: [{ id: '09' }],
+      referenceNotice:
+        'HS edition enrichment unavailable. Could not load H0, H1, H2, H3, H4, H5, H6.',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+
+  it('propagates caller cancellation during enrichment and lets a concurrent caller succeed', async () => {
+    const controller = new AbortController();
+    const started = Promise.withResolvers<void>();
+    const complete = Promise.withResolvers<void>();
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (_url, options) => {
+      started.resolve();
+      return new Promise((resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
+          once: true,
+        });
+        complete.promise.then(() => resolve(Response.json([{ id: '09', text: 'Coffee' }])));
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const input = searchCommoditiesTool.input.parse({ query: '09' });
+    const cancelled = searchCommoditiesTool.handler(
+      input,
+      createMockContext({ signal: controller.signal }),
+    );
+    const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    await started.promise;
+    const survivor = searchCommoditiesTool.handler(input, createMockContext());
+    controller.abort();
+    await rejected;
+    complete.resolve();
+    expect((await survivor).matches[0]?.editions).toEqual([
+      'H0',
+      'H1',
+      'H2',
+      'H3',
+      'H4',
+      'H5',
+      'H6',
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(14);
   });
 
   it('finds commodities by keyword', async () => {
@@ -236,6 +379,7 @@ describe('searchCommoditiesTool', () => {
           parent: '#',
           isLeaf: false,
           recommendedQueryCode: 'TOTAL',
+          editions: ['H0', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'],
         },
       ],
       totalMatches: 1,
@@ -362,7 +506,7 @@ describe('searchCommoditiesTool', () => {
       offset: 10,
     });
     const notice =
-      'No HS commodity codes matched "xyzzy". Try a different keyword, a shorter prefix, or remove the aggr_level filter.';
+      'No HS commodity codes matched "xyzzy". Try technical commodity terms like "soya beans", "bovine", or "photovoltaic", a shorter code prefix, or remove the aggr_level filter.';
     expect(result.structuredContent).toMatchObject({ notice });
     expect(contentText(result)).toContain(notice);
   });
@@ -446,7 +590,7 @@ describe('searchCommoditiesTool', () => {
       ctx,
     );
     expect(getEnrichment(ctx).notice).toBe(
-      'No HS commodity codes matched "xyzzy". Try a different keyword, a shorter prefix, or remove the aggr_level filter.',
+      'No HS commodity codes matched "xyzzy". Try technical commodity terms like "soya beans", "bovine", or "photovoltaic", a shorter code prefix, or remove the aggr_level filter.',
     );
     expect((ctx.log as MockContextLogger).calls).toContainEqual(
       expect.objectContaining({

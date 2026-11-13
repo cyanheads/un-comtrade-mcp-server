@@ -97,6 +97,7 @@ describe('getDataAvailabilityTool', () => {
       [0, [1, 2], 2],
       [2, [3, 4], 4],
       [4, [5], undefined],
+      [5, [], undefined],
       [8, [], undefined],
     ] as const) {
       availMock.mockResolvedValue(offset % 4 === 0 ? rows : rows.toReversed());
@@ -117,9 +118,25 @@ describe('getDataAvailabilityTool', () => {
       expect(text).not.toContain('No data availability records found');
       if (nextOffset !== undefined) expect(text).toContain(`offset=${nextOffset}`);
       else expect(text).not.toContain('Continue with');
-      if (offset === 8) expect(text).toContain('past the end');
+      if (offset === 5 || offset === 8) {
+        const notice =
+          'This offset is past the end of the matching datasets. The largest offset that returns a row is 4.';
+        expect(run.structuredContent).toMatchObject({ notice });
+        expect(text).toContain(notice);
+      } else expect(run.structuredContent).not.toHaveProperty('notice');
     }
     expect(seen).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('reports one classification-specific error for malformed identifiers', () => {
+    const result = getDataAvailabilityTool.input.safeParse({ classification: 'H-6' });
+    expect(result.error?.issues).toEqual([
+      expect.objectContaining({
+        path: ['classification'],
+        message:
+          'Use a classification identifier containing letters and digits, such as HS, B4, B5, or EB10.',
+      }),
+    ]);
   });
 
   it('defaults to 50 rows and permits a requested limit beyond the default', async () => {
@@ -329,6 +346,17 @@ describe('getDataAvailabilityTool partner-only reporters', () => {
       ).toContain(`> ${notice}`);
     },
   );
+
+  it('leaves Taiwan services reporter coverage open on both surfaces', async () => {
+    const result = await runToolContract(getDataAvailabilityTool, {
+      type_code: 'S',
+      reporter_code: 158,
+    });
+    const notice =
+      'No data availability records found for reporter 158. Try a different reporter, period, or classification.';
+    expect(result.structuredContent).toMatchObject({ datasets: [], notice });
+    expect(JSON.stringify(result.content)).toContain(notice);
+  });
 
   it('keeps availability rows for a partner-only code without a notice', async () => {
     vi.mocked(ComtradeMetaService.prototype.getDataAvailability).mockResolvedValue([

@@ -8,12 +8,12 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
   codeSchema,
   flowSchema,
-  GOODS_CODE_SHAPE_MESSAGE,
   goodsClassificationSchema,
-  goodsCodesMatchClassification,
   m49Schema,
   periodFrequency,
   periodSchema,
+  SINGLE_GOODS_CODE_SHAPE_MESSAGE,
+  singleGoodsCodeMatchesClassification,
 } from '@/mcp-server/tools/comtrade-input.js';
 import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
@@ -108,9 +108,9 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
           'Number of top partners to return; totalPartners counts every partner retrieved.',
         ),
     })
-    .refine(goodsCodesMatchClassification, {
+    .refine(singleGoodsCodeMatchesClassification, {
       path: ['cmd_code'],
-      message: GOODS_CODE_SHAPE_MESSAGE,
+      message: SINGLE_GOODS_CODE_SHAPE_MESSAGE,
     }),
 
   output: z.object({

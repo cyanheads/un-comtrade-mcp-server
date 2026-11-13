@@ -7,6 +7,11 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import {
+  cmdCodesWithoutRecordsSchema,
+  commodityCoverage,
+  renderCmdCodesWithoutRecords,
+} from '@/mcp-server/tools/commodity-coverage.js';
+import {
   codeSchema,
   frequencySchema,
   GOODS_CODE_SHAPE_MESSAGE,
@@ -18,7 +23,10 @@ import {
   periodsMatchFrequency,
   resolveFrequency,
 } from '@/mcp-server/tools/comtrade-input.js';
-import { counterpartNotices } from '@/mcp-server/tools/reporter-notice.js';
+import {
+  counterpartNotices,
+  mixedPartnerBreakdownNotice,
+} from '@/mcp-server/tools/reporter-notice.js';
 import {
   describePeriodFailures,
   getComtradeDataService,
@@ -160,7 +168,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       partner_code: m49Schema
         .optional()
         .describe(
-          'M49 code of the trade partner. Use 0 to aggregate across all partners (World total). Omit to get a disaggregated breakdown by partner country.',
+          'M49 code of the trade partner. Use 0 to aggregate across all partners (World total). Omitting it can return World alongside the partner breakdown.',
         ),
       cmd_code: z
         .array(codeSchema)
@@ -255,6 +263,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       .array(z.string())
       .optional()
       .describe('Commodity codes beyond the 20-code work cap; query them separately.'),
+    cmdCodesWithoutRecords: cmdCodesWithoutRecordsSchema,
     referenceNotice: z
       .string()
       .optional()
@@ -265,7 +274,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       .string()
       .optional()
       .describe(
-        'Why data is missing: periods that were rate limited (with the wait), failed on a UN Comtrade server error (with the HTTP status) or network failure, or ran out of time, and a recovery hint when no records are returned, naming the code to query instead of a partner-only reporter_code (250 → 251, 158 → 490) or of a partner_code with a reporter-valid counterpart (840 → 842, 158 → 490).',
+        'World overlap warnings, commodity edition guidance, period failures, and recovery for empty results, including counterpart codes for reporter or partner filters.',
       ),
   },
 
@@ -295,6 +304,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       render: (codes) =>
         codes ? `**Unserved commodity codes:** ${codes.join(', ')}. Query them separately.` : '',
     },
+    cmdCodesWithoutRecords: { render: renderCmdCodesWithoutRecords },
   },
   async handler(input, ctx) {
     ctx.log.info('comtrade_get_trade_flows', {
@@ -349,6 +359,13 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
     }
 
     const notices = result.failedPeriods ? [describePeriodFailures(result.failedPeriods)] : [];
+    const mixedBreakdown = mixedPartnerBreakdownNotice(input.partner_code, result.records);
+    if (mixedBreakdown) notices.push(mixedBreakdown);
+    if (!result.truncated && failed.size < periods.length) {
+      const { missing, editionNotice } = commodityCoverage(codes, [result.records], failed);
+      if (missing.length > 0) ctx.enrich({ cmdCodesWithoutRecords: missing });
+      if (editionNotice) notices.push(editionNotice);
+    }
     if (result.records.length === 0) {
       const counterparts = counterpartNotices(
         reference,

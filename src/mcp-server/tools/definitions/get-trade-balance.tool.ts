@@ -6,6 +6,12 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
+  cmdCodesWithoutRecordsSchema,
+  commodityCoverage,
+  renderCmdCodesWithoutRecords,
+  selectorLevel,
+} from '@/mcp-server/tools/commodity-coverage.js';
+import {
   codeSchema,
   frequencySchema,
   GOODS_CODE_SHAPE_MESSAGE,
@@ -29,14 +35,6 @@ import {
   type TradeQueryResult,
 } from '@/services/comtrade-data/comtrade-data-service.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
-
-/**
- * The level an `AG<n>` selector covers, else undefined. Codes arrive trimmed, uppercased, and
- * shape-checked against the classification.
- */
-function selectorLevel(code: string): number | undefined {
-  return code.startsWith('AG') ? Number(code.slice(2)) : undefined;
-}
 
 /**
  * Whether two distinct codes return overlapping rows, which a balance would sum twice. HS editions
@@ -174,7 +172,7 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       .string()
       .optional()
       .describe(
-        'Periods left out because a flow was rate limited (with the wait), hit a UN Comtrade server error or network failure, or ran out of time; served periods with no export or import data; and possible incompleteness when a preview response reaches its cap.',
+        'Period failures, periods without export or import data, possible incompleteness at the preview cap, and commodity edition guidance for missing selectors.',
       ),
     referenceNotice: z
       .string()
@@ -190,6 +188,7 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       .array(z.string())
       .optional()
       .describe('Commodity codes beyond the 20-code work cap; query them separately.'),
+    cmdCodesWithoutRecords: cmdCodesWithoutRecordsSchema,
   },
   errors: [
     {
@@ -278,6 +277,7 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       render: (codes) =>
         codes ? `**Unserved commodity codes:** ${codes.join(', ')}. Query them separately.` : '',
     },
+    cmdCodesWithoutRecords: { render: renderCmdCodesWithoutRecords },
   },
   async handler(input, ctx) {
     ctx.log.info('comtrade_get_trade_balance', {
@@ -468,6 +468,15 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       notices.push(
         'A preview response reached 500 records; balance values may be incomplete. Narrow the commodity query.',
       );
+    if (!truncated) {
+      const { missing, editionNotice } = commodityCoverage(
+        codes,
+        [exportResult.records, importResult.records],
+        failed,
+      );
+      if (missing.length > 0) ctx.enrich({ cmdCodesWithoutRecords: missing });
+      if (editionNotice) notices.push(editionNotice);
+    }
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     return {

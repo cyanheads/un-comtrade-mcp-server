@@ -373,8 +373,7 @@ describe('getServicesTradeTool', () => {
         suggestionBasis: 'published_under',
         suggestedReporterName: 'Other Asia, nes',
       },
-      sentence:
-        'Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.',
+      sentence: `Service code 7 belongs to EB10; ${EB_SCHEME_EFFECT} ${AVAILABILITY_ROUTE} Set classification to "EB10" for UN Comtrade's converted series.`,
     },
     {
       reporter_code: 0,
@@ -434,42 +433,43 @@ describe('getServicesTradeTool', () => {
     expect(result.structuredContent).not.toHaveProperty('notice');
   });
 
-  it('ends the empty notice for partner 158 with the partner code its trade is published under', async () => {
-    const statuses = new Map<number, ReporterStatus>([
-      [842, { referenceStatus: 'reporter', name: 'USA' }],
-      [
-        158,
-        {
-          referenceStatus: 'partner_only',
-          name: 'Taiwan, Province of China',
-          suggestedReporterCode: 490,
-          suggestionBasis: 'published_under',
-          suggestedReporterName: 'Other Asia, nes',
-        },
-      ],
-    ]);
-    vi.spyOn(ComtradeReferenceService.prototype, 'getReporterStatus').mockImplementation(
-      (code) => statuses.get(code) ?? { referenceStatus: 'unknown' },
-    );
-    fetchMock.mockResolvedValue({ records: [], totalCount: 0, truncated: false });
-    const result = await runToolContract(getServicesTradeTool, {
-      reporter_code: 842,
-      flow_code: 'X',
-      period: ['2022'],
-      partner_code: 158,
-      service_code: '7',
-    });
-    const expected =
-      'No services trade records found for reporter 842, flow=X, periods=[2022]. UN Comtrade publishes the trade of partner 158 (Taiwan, Province of China) under 490 (Other Asia, nes). Retry with partner_code 490.';
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.objectContaining({ partnerCode: 158 }),
-      expect.anything(),
-      expect.any(Number),
-    );
-    expect(result.structuredContent).toMatchObject({ records: [], notice: expected });
-    expect(textOf(result)).toContain(`> ${expected}`);
-    expect(catalogFetch).not.toHaveBeenCalled();
-  });
+  it.each([158, 490])(
+    'keeps Taiwan services coverage guidance for partner %s',
+    async (partner_code) => {
+      const statuses = new Map<number, ReporterStatus>([
+        [842, { referenceStatus: 'reporter', name: 'USA' }],
+        [
+          158,
+          {
+            referenceStatus: 'partner_only',
+            name: 'Taiwan, Province of China',
+            suggestedReporterCode: 490,
+            suggestionBasis: 'published_under',
+            suggestedReporterName: 'Other Asia, nes',
+          },
+        ],
+      ]);
+      vi.spyOn(ComtradeReferenceService.prototype, 'getReporterStatus').mockImplementation(
+        (code) => statuses.get(code) ?? { referenceStatus: 'unknown' },
+      );
+      fetchMock.mockResolvedValue({ records: [], totalCount: 0, truncated: false });
+      const result = await runToolContract(getServicesTradeTool, {
+        reporter_code: 842,
+        flow_code: 'X',
+        period: ['2022'],
+        partner_code,
+        service_code: '7',
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.objectContaining({ partnerCode: partner_code }),
+        expect.anything(),
+        expect.any(Number),
+      );
+      const expected = `No services trade records found for reporter 842, flow=X, periods=[2022]. ${partner_code === 490 ? 'Use partner_code 158 for Taiwan services. ' : ''}Service code 7 belongs to EB10; ${EB_SCHEME_EFFECT} ${AVAILABILITY_ROUTE} Set classification to "EB10" for UN Comtrade's converted series.`;
+      expect(result.structuredContent).toMatchObject({ records: [], notice: expected });
+      expect(textOf(result)).toContain(`> ${expected}`);
+    },
+  );
 
   it('joins a period failure, the EB10 conversion note, and the scheme into one notice', async () => {
     fetchMock.mockResolvedValue({

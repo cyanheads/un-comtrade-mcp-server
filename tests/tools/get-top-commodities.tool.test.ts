@@ -73,6 +73,26 @@ function useCatalog(codes: string[], aggrLevel: 2 | 4) {
   );
 }
 
+/** Index a hierarchy with immediate parent links as in an edition catalog. */
+function useHierarchy(entries: [string, 2 | 4 | 6, string?][]) {
+  const catalog = new Map(
+    entries.map(([id, aggrLevel, parent]) => [
+      id,
+      {
+        id,
+        text: id,
+        aggrLevel,
+        isLeaf: aggrLevel === 6,
+        recommendedQueryCode: id,
+        ...(parent && { parent }),
+      },
+    ]),
+  );
+  return vi
+    .spyOn(ComtradeReferenceService.prototype, 'getCommodityCodes')
+    .mockResolvedValue(catalog);
+}
+
 /** Every text block of a tool result, as one string. */
 function textOf(result: Awaited<ReturnType<typeof runToolContract>>): string {
   return (result.content ?? []).map((block) => (block as { text: string }).text).join('\n');
@@ -113,6 +133,373 @@ describe('getTopCommoditiesTool', () => {
     });
   });
   afterEach(() => vi.useRealTimers());
+
+  it('ranks only matching descendants two levels below a chapter using its own value', async () => {
+    useHierarchy([
+      ['85', 2],
+      ['8542', 4, '85'],
+      ['854231', 6, '8542'],
+      ['854239', 6, '8542'],
+      ['8534', 4, '85'],
+      ['853400', 6, '8534'],
+      ['8471', 4, '84'],
+      ['847130', 6, '8471'],
+    ]);
+    const entry = {
+      ...COMMODITY_RECORDS[0],
+      partnerCode: 156,
+      period: '202205',
+      classificationCode: 'H6',
+    };
+    const discovery = [
+      { ...entry, cmdCode: 'TOTAL', primaryValue: 400 },
+      { ...entry, cmdCode: '85', primaryValue: 200 },
+      { ...entry, cmdCode: '85', primaryValue: 999, classificationCode: 'H5' },
+    ];
+    const children = [
+      { ...entry, cmdCode: '854239', aggrLevel: 6, primaryValue: 100 },
+      { ...entry, cmdCode: '854231', aggrLevel: 6, primaryValue: 50 },
+      ...[
+        { cmdCode: '847130' },
+        { cmdCode: 'TOTAL' },
+        { cmdCode: '854239', classificationCode: 'H5' },
+        { cmdCode: '854239', partnerCode: 0 },
+        { cmdCode: '854239', reporterCode: 490 },
+        { cmdCode: '854239', flowCode: 'M' },
+        { cmdCode: '854239', period: '202204' },
+        { cmdCode: '854239', aggrLevel: 4 },
+      ].map((row) => ({ ...entry, cmdCode: '854239', aggrLevel: 6, primaryValue: 999, ...row })),
+    ];
+    fetchMock
+      .mockResolvedValueOnce({ records: discovery, totalCount: discovery.length, truncated: false })
+      .mockResolvedValueOnce({ records: children, totalCount: children.length, truncated: false });
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      period: '202205',
+      partner_code: 156,
+      aggr_level: 6,
+      parent_code: ' 85 ',
+      limit: 1,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      parentCode: '85',
+      classificationCode: 'H6',
+      denominatorValueUsd: 200,
+      aggrLevel: 6,
+      totalValueUsd: 150,
+      totalCommodities: 2,
+      coverageComplete: true,
+      truncated: false,
+      missingCodes: [],
+      commodities: [{ cmdCode: '854239', rank: 1, sharePercent: 50 }],
+    });
+    expect(fetchMock.mock.calls.map(([params]) => params)).toEqual([
+      expect.objectContaining({ cmdCode: 'TOTAL,85', freqCode: 'M', partnerCode: 156 }),
+      expect.objectContaining({ cmdCode: '854231,854239,853400', freqCode: 'M', partnerCode: 156 }),
+    ]);
+    expect(textOf(result)).toContain('Parent code: 85');
+    expect(textOf(result)).toContain('Parent 85 denominator: $200 USD');
+    expect(textOf(result)).toContain('HS Subheading');
+    expect(textOf(result)).toContain('**#1. 854239**');
+    expect(textOf(result)).toContain('Share: 50%');
+  });
+
+  it.each([
+    { aggr_level: 6 },
+    { aggr_level: 6, parent_code: '  ' },
+    { parent_code: '85' },
+    { aggr_level: 2, parent_code: '85' },
+    { aggr_level: 4, parent_code: '8542' },
+    { aggr_level: 6, parent_code: '854239' },
+    { aggr_level: 4, parent_code: 'AG2' },
+    { aggr_level: 4, parent_code: 'TOTAL' },
+  ])('rejects invalid drill-down input %j without fetching', async (scope) => {
+    const result = await runToolContract(getTopCommoditiesTool, { ...args, ...scope });
+    expect(result.structuredContent).toMatchObject({
+      error: { code: JsonRpcErrorCode.InvalidParams },
+    });
+    expect(textOf(result)).toMatch(/requires|deeper|two-digit/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('treats a blank parent as an unscoped level-2 request', async () => {
+    const result = await runToolContract(getTopCommoditiesTool, { ...args, parent_code: '  ' });
+    expect(result.structuredContent).toMatchObject({
+      aggrLevel: 2,
+      denominatorValueUsd: 700_000_000,
+    });
+    expect(result.structuredContent).not.toHaveProperty('parentCode');
+    expect(textOf(result)).toContain('TOTAL denominator:');
+    expect(fetchMock.mock.calls[0]?.[0]?.cmdCode).toBe('TOTAL');
+  });
+
+  it.each([undefined, 0])(
+    'ranks children when the parent value is %s, without shares',
+    async (parentValue) => {
+      useHierarchy([
+        ['85', 2],
+        ['8542', 4, '85'],
+      ]);
+      const totals = [
+        ...rowsOf([['TOTAL', 500, 'Total']], 2),
+        ...(parentValue === undefined ? [] : rowsOf([['85', parentValue, 'Electrical']], 2)),
+      ].map((row) => ({ ...row, classificationCode: 'H6' }));
+      fetchMock
+        .mockResolvedValueOnce({ records: totals, totalCount: totals.length, truncated: false })
+        .mockResolvedValueOnce({
+          records: rowsOf([['8542', 75, 'Circuits']], 4).map((row) => ({
+            ...row,
+            classificationCode: 'H6',
+          })),
+          totalCount: 1,
+          truncated: false,
+        });
+      const result = await runToolContract(getTopCommoditiesTool, {
+        ...args,
+        parent_code: '85',
+        aggr_level: 4,
+        limit: 30,
+      });
+      expect(result.structuredContent).toMatchObject({
+        parentCode: '85',
+        totalValueUsd: 75,
+        coverageComplete: true,
+        commodities: [{ rank: 1, cmdCode: '8542', primaryValueUsd: 75 }],
+      });
+      expect(textOf(result)).toContain('**#1. 8542**');
+      expect(textOf(result)).not.toContain('Share:');
+      expect(result.structuredContent?.commodities).toEqual([
+        { rank: 1, cmdCode: '8542', cmdDesc: 'Circuits', aggrLevel: 4, primaryValueUsd: 75 },
+      ]);
+      if (parentValue === undefined) {
+        expect(result.structuredContent).not.toHaveProperty('denominatorValueUsd');
+        expect(textOf(result)).toContain('shares are unavailable');
+      } else {
+        expect(result.structuredContent).toMatchObject({ denominatorValueUsd: 0 });
+        expect(textOf(result)).toContain('Parent 85 denominator: $0 USD');
+      }
+    },
+  );
+
+  it.each(['absent parent', 'unresolved edition', 'unavailable catalog'] as const)(
+    'returns scoped empty coverage for %s without falling back to AG',
+    async (failure) => {
+      const catalog = useHierarchy([
+        ['84', 2],
+        ['8471', 4, '84'],
+      ]);
+      if (failure === 'unavailable catalog')
+        catalog.mockRejectedValueOnce(new Error('Unavailable'));
+      fetchMock.mockResolvedValueOnce({
+        records:
+          failure === 'unresolved edition'
+            ? []
+            : rowsOf([['TOTAL', 500, 'Total']], 2).map((row) => ({
+                ...row,
+                classificationCode: 'H6',
+              })),
+        totalCount: failure === 'unresolved edition' ? 0 : 1,
+        truncated: false,
+      });
+      const result = await runToolContract(getTopCommoditiesTool, {
+        ...args,
+        parent_code: '85',
+        aggr_level: 4,
+      });
+      const notice = {
+        'absent parent': 'Parent code 85 is absent at the required level in the H6 catalog',
+        'unresolved edition': 'Matching TOTAL did not identify one complete HS edition',
+        'unavailable catalog': 'TOTAL or the matching HS reference is unavailable',
+      }[failure];
+      expect(result.structuredContent).toMatchObject({
+        parentCode: '85',
+        commodities: [],
+        missingCodes: [],
+        coverageComplete: failure === 'absent parent',
+        coverageNotice: expect.stringContaining(notice),
+      });
+      expect(textOf(result)).toContain(notice);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('subdivides capped descendant queries recursively and only marks unresolved codes missing', async () => {
+    useHierarchy([
+      ['8542', 4],
+      ['854231', 6, '8542'],
+      ['854232', 6, '8542'],
+      ['854233', 6, '8542'],
+      ['854239', 6, '8542'],
+    ]);
+    fetchMock.mockImplementation(async ({ cmdCode }) => {
+      const rows: [string, number, string][] =
+        cmdCode === 'TOTAL,8542'
+          ? [
+              ['TOTAL', 400, 'Total'],
+              ['8542', 200, 'Circuits'],
+            ]
+          : cmdCode === '854231' || cmdCode === '854231,854232,854233,854239'
+            ? [['854231', 75, 'Processors']]
+            : [];
+      return {
+        records: rowsOf(rows, cmdCode === 'TOTAL,8542' ? 4 : 6).map((row) => ({
+          ...row,
+          classificationCode: 'H6',
+        })),
+        totalCount: rows.length,
+        truncated: ['854231,854232,854233,854239', '854231,854232', '854231'].includes(cmdCode),
+      };
+    });
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      parent_code: '8542',
+      aggr_level: 6,
+    });
+    expect(fetchMock.mock.calls.map(([params]) => params.cmdCode)).toEqual([
+      'TOTAL,8542',
+      '854231,854232,854233,854239',
+      '854231,854232',
+      '854231',
+      '854232',
+      '854233,854239',
+    ]);
+    expect(result.structuredContent).toMatchObject({
+      parentCode: '8542',
+      denominatorValueUsd: 200,
+      coverageComplete: false,
+      missingCodes: ['854231'],
+      commodities: [
+        { cmdCode: '854231', cmdDesc: 'Processors', aggrLevel: 6, primaryValueUsd: 75 },
+      ],
+    });
+    expect(result.structuredContent?.commodities).toEqual([
+      { cmdCode: '854231', cmdDesc: 'Processors', aggrLevel: 6, primaryValueUsd: 75 },
+    ]);
+    expect(textOf(result)).toContain('Missing codes: 854231');
+    expect(textOf(result)).toContain('ranks and shares are withheld');
+  });
+
+  it('flags both H0 residual subheadings and retains the reported values and parent shares', async () => {
+    useHierarchy([
+      ['99', 2],
+      ['9999', 4, '99'],
+      ['999999', 6, '9999'],
+      ['9999AA', 6, '9999'],
+    ]);
+    const totals = rowsOf(
+      [
+        ['TOTAL', 800, 'Total'],
+        ['9999', 100, RESIDUAL_DESC],
+      ],
+      4,
+    );
+    const subheadings = [
+      {
+        ...COMMODITY_RECORDS[0],
+        cmdCode: '9999AA',
+        cmdDesc: RESIDUAL_DESC,
+        primaryValue: 20,
+        aggrLevel: 6,
+      },
+      {
+        ...COMMODITY_RECORDS[0],
+        cmdCode: '999999',
+        cmdDesc: RESIDUAL_DESC,
+        primaryValue: 30,
+        aggrLevel: 6,
+      },
+    ];
+    fetchMock
+      .mockResolvedValueOnce({
+        records: totals.map((row) => ({ ...row, classificationCode: 'H0' })),
+        totalCount: 2,
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        records: subheadings.map((row) => ({ ...row, classificationCode: 'H0' })),
+        totalCount: 2,
+        truncated: false,
+      });
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      parent_code: '9999',
+      aggr_level: 6,
+    });
+    expect(result.structuredContent).toMatchObject({
+      totalValueUsd: 50,
+      denominatorValueUsd: 100,
+      commodities: [
+        { cmdCode: '999999', residual: true, rank: 1, sharePercent: 30 },
+        { cmdCode: '9999AA', residual: true, rank: 2, sharePercent: 20 },
+      ],
+    });
+    for (const surface of [textOf(result), JSON.stringify(result.structuredContent)]) {
+      expect(surface).toContain(
+        'Code 999999 (30 USD, 30% of matching parent 9999) is a residual subheading',
+      );
+      expect(surface).toContain(
+        'Code 9999AA (20 USD, 20% of matching parent 9999) is a residual subheading',
+      );
+    }
+  });
+
+  it('propagates input errors from scoped retrieval on both surfaces', async () => {
+    fetchMock.mockRejectedValueOnce(
+      new McpError(JsonRpcErrorCode.InvalidParams, 'Query dimensions rejected.', {
+        reason: 'upstream_validation',
+      }),
+    );
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      parent_code: '85',
+      aggr_level: 4,
+    });
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.InvalidParams,
+        data: {
+          reason: 'upstream_validation',
+          recovery: {
+            hint: 'Check the reporter, partner, commodity, flow, and period before retrying.',
+          },
+        },
+      },
+    });
+    expect(textOf(result)).toContain(
+      'Check the reporter, partner, commodity, flow, and period before retrying.',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rethrows caller cancellation during scoped edition lookup', async () => {
+    const controller = new AbortController();
+    const reason = new DOMException('Stopped during catalog retrieval.', 'AbortError');
+    useHierarchy([['85', 2]]).mockImplementationOnce(async (_edition, signal) => {
+      controller.abort(reason);
+      signal?.throwIfAborted();
+      throw Error('Missing catalog cancellation signal');
+    });
+    fetchMock.mockResolvedValueOnce({
+      records: rowsOf([['TOTAL', 100, 'Total']], 2).map((row) => ({
+        ...row,
+        classificationCode: 'H6',
+      })),
+      totalCount: 1,
+      truncated: false,
+    });
+    const input = getTopCommoditiesTool.input.parse({ ...args, parent_code: '85', aggr_level: 4 });
+    await expect(
+      getTopCommoditiesTool.handler(
+        input,
+        createMockContext({
+          signal: controller.signal,
+          errors: getTopCommoditiesTool.errors,
+        }),
+      ),
+    ).rejects.toBe(reason);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 
   it('ranks commodities by descending trade value', async () => {
     const ctx = createMockContext({ errors: getTopCommoditiesTool.errors });
