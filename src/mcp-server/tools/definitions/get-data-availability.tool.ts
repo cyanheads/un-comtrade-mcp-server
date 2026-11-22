@@ -19,7 +19,7 @@ import { getComtradeReferenceService } from '@/services/comtrade-reference/comtr
 export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
   title: 'Check Data Availability',
   description:
-    'Check which reporter/period/classification combinations have published data before constructing expensive trade queries. Returns dataset records with period, classification, record count, and first/latest release dates. Call this before querying recent periods — annual data is typically published 3–12 months after the reference year and not all countries report every year. Omit filters to browse the availability index, 50 rows by default. Continue with nextOffset using the same filters and limit.',
+    'Check which reporter/period/classification combinations have published data before querying trade. Returns datasets ordered by reporter code, newest period first within each reporter, with classification, record count and release dates where available. Annual data is typically published 3–12 months after the reference year and some reporters skip years. Omit filters to browse the index, 50 rows by default. Continue with nextOffset using the same filters and limit.',
   annotations: { readOnlyHint: true, openWorldHint: true },
   errors: [
     {
@@ -189,7 +189,7 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
     const ordered = records.toSorted(
       (a, b) =>
         a.reporterCode - b.reporterCode ||
-        a.period.localeCompare(b.period) ||
+        b.period.localeCompare(a.period) ||
         a.classificationCode.localeCompare(b.classificationCode) ||
         a.typeCode.localeCompare(b.typeCode) ||
         a.freqCode.localeCompare(b.freqCode),

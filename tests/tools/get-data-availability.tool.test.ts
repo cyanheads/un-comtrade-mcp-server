@@ -163,7 +163,7 @@ describe('getDataAvailabilityTool', () => {
     expect(getDataAvailabilityTool.annotations?.openWorldHint).toBe(true);
   });
 
-  it('orders tied reporters by period, classification, trade type, then frequency', async () => {
+  it('pages by reporter and newest period, then classification, trade type and frequency', async () => {
     const variations = [
       { period: '2023', classificationCode: 'HS', typeCode: 'C', freqCode: 'A' },
       { period: '2022', classificationCode: 'HS', typeCode: 'S', freqCode: 'M' },
@@ -172,6 +172,13 @@ describe('getDataAvailabilityTool', () => {
       { period: '2022', classificationCode: 'H6', typeCode: 'C', freqCode: 'A' },
     ] as const;
     const rows = variations.map((values) => ({ ...AVAILABILITY_RECORD, ...values }));
+    rows.push({
+      ...AVAILABILITY_RECORD,
+      reporterCode: 156,
+      reporterDesc: 'China',
+      period: '2022',
+      classificationCode: 'HS',
+    });
     const seen: string[] = [];
     for (const offset of [0, 2, 4]) {
       availMock.mockResolvedValue(offset === 2 ? rows.toReversed() : rows);
@@ -179,17 +186,20 @@ describe('getDataAvailabilityTool', () => {
       const page = getDataAvailabilityTool.output.parse(run.structuredContent);
       expect(page.datasets.length).toBeGreaterThan(0);
       for (const row of page.datasets) {
-        const key = `${row.period}/${row.classificationCode}/${row.typeCode}/${row.freqCode}`;
+        const key = `${row.reporterCode}/${row.period}/${row.classificationCode}/${row.typeCode}/${row.freqCode}`;
         seen.push(key);
-        expect(JSON.stringify(run.content)).toContain(row.classificationCode);
+        expect(JSON.stringify(run.content)).toContain(
+          `(${row.reporterCode}) | ${row.period} | ${row.classificationCode} | freq:${row.freqCode} | typeCode:${row.typeCode}`,
+        );
       }
     }
     expect(seen).toEqual([
-      '2022/H6/C/A',
-      '2022/HS/C/A',
-      '2022/HS/S/A',
-      '2022/HS/S/M',
-      '2023/HS/C/A',
+      '156/2022/HS/C/A',
+      '840/2023/HS/C/A',
+      '840/2022/H6/C/A',
+      '840/2022/HS/C/A',
+      '840/2022/HS/S/A',
+      '840/2022/HS/S/M',
     ]);
   });
 
