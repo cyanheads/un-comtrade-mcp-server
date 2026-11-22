@@ -1,6 +1,6 @@
 # un-comtrade-mcp-server - Directory Structure
 
-Generated on: 2026-11-13 16:30:16
+Generated on: 2026-11-22 01:07:13
 
 ```text
 un-comtrade-mcp-server/
@@ -160,6 +160,7 @@ un-comtrade-mcp-server/
 │   │       │   ├── get-top-commodities.tool.ts
 │   │       │   ├── get-top-partners.tool.ts
 │   │       │   ├── get-top-reporters.tool.ts
+│   │       │   ├── get-top-services-partners.tool.ts
 │   │       │   ├── get-trade-balance.tool.ts
 │   │       │   ├── get-trade-flows.tool.ts
 │   │       │   ├── list-service-categories.tool.ts
@@ -167,7 +168,9 @@ un-comtrade-mcp-server/
 │   │       │   └── search-commodities.tool.ts
 │   │       ├── commodity-coverage.ts
 │   │       ├── comtrade-input.ts
-│   │       └── reporter-notice.ts
+│   │       ├── reporter-notice.ts
+│   │       ├── services-empty-notice.ts
+│   │       └── trade-page.ts
 │   ├── services/
 │   │   ├── comtrade-data/
 │   │   │   ├── comtrade-data-service.ts
@@ -185,7 +188,8 @@ un-comtrade-mcp-server/
 │   │   ├── server-startup.test.ts
 │   │   └── session-mode.test.ts
 │   ├── fixtures/
-│   │   └── comtrade-world-ag2.json
+│   │   ├── comtrade-world-ag2.json
+│   │   └── read-trade-table.ts
 │   ├── mcp-server/
 │   │   └── tools/
 │   │       └── definitions/
@@ -208,12 +212,14 @@ un-comtrade-mcp-server/
 │       ├── get-top-commodities.tool.test.ts
 │       ├── get-top-partners.tool.test.ts
 │       ├── get-top-reporters.tool.test.ts
+│       ├── get-top-services-partners.tool.test.ts
 │       ├── get-trade-balance.tool.test.ts
 │       ├── get-trade-flows.tool.test.ts
 │       ├── list-service-categories.tool.test.ts
 │       ├── lookup-countries.tool.test.ts
 │       ├── reporter-notice.test.ts
-│       └── search-commodities.tool.test.ts
+│       ├── search-commodities.tool.test.ts
+│       └── trade-page.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
