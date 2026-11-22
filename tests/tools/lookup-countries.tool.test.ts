@@ -111,6 +111,28 @@ describe('lookupCountriesTool', () => {
     });
   });
 
+  it.each([
+    ['World', 'reporter', 0, true],
+    ['European Union', 'partner', 97, true],
+    ['World', 'reporter', 0, false],
+    ['European Union', 'partner', 97, false],
+  ])(
+    'explains a role mismatch for %s as %s (%i, groups=%s)',
+    async (query, role, id, include_groups) => {
+      const out = await runToolContract(lookupCountriesTool, { query, role, include_groups });
+      const groups = include_groups ? '' : ' and include_groups=true';
+      const notice = `Matches for "${query}" were excluded by role="${role}": ${query} (${id}). Retry with role="any"${groups} to list them.`;
+      expect(out.structuredContent).toMatchObject({ matches: [], totalMatches: 0, notice });
+      expect(out.content).toContainEqual({ type: 'text', text: expect.stringContaining(notice) });
+      const retry = await runToolContract(lookupCountriesTool, {
+        query,
+        role: 'any',
+        include_groups: true,
+      });
+      expect(retry.structuredContent).toMatchObject({ matches: [{ id }], totalMatches: 1 });
+    },
+  );
+
   it('finds a country by ISO alpha-3 code', async () => {
     const ctx = createMockContext();
     const input = lookupCountriesTool.input.parse({ query: 'DEU' });

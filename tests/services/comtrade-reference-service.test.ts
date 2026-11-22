@@ -276,7 +276,7 @@ describe('ComtradeReferenceService', () => {
       ['4', ['8524']],
       ['6', ['852411']],
     ] as const) {
-      const result = hsClassificationResource.handler({ level }, createMockContext());
+      const result = await hsClassificationResource.handler({ level }, createMockContext());
       expect(result.codes.map((entry) => entry.id)).toEqual(ids);
     }
     const capped = await runToolContract(searchCommoditiesTool, { query: '8524', limit: 1 });
@@ -645,7 +645,7 @@ describe('ComtradeReferenceService', () => {
       ['4', ['8524']],
       ['6', ['852411']],
     ] as const) {
-      const result = hsClassificationResource.handler({ level }, createMockContext());
+      const result = await hsClassificationResource.handler({ level }, createMockContext());
       expect(result.codes.map((entry) => entry.id)).toEqual(ids);
       expect(result.totalCount).toBe(1);
     }
@@ -1149,10 +1149,9 @@ describe('catalog search ranking', () => {
     }
   });
 
-  it('leaves the EB matcher on contiguous descriptions', () => {
-    expect(ids(ref.searchEbopsCategories('passenger transport'))).toEqual(
-      substringMatches(RANKED_EB_ROWS, 'passenger transport', true),
-    );
+  it('matches reordered terms in EB descriptions without crossing categories', () => {
+    expect(ids(ref.searchEbopsCategories('physical services'))).toEqual(['SA']);
+    expect(ids(ref.searchEbopsCategories('passenger transport'))).toEqual([]);
   });
 
   it.each([
@@ -1314,7 +1313,18 @@ describe('catalog search ranking', () => {
       ]);
     }
     // "a a" first occurs in X8 after "x"; only the overlapping occurrence after it stands alone.
-    expect(ids(tiers.searchEbopsCategories('a a'))).toEqual(['X8', 'X7']);
+    expect(ids(tiers.searchEbopsCategories('a a'))).toEqual([
+      'X8',
+      'X7',
+      'X1',
+      'X2',
+      'X3',
+      'X4',
+      'X5',
+      'X6',
+      'TEA.1',
+      'X9',
+    ]);
   });
 
   describe('timing', () => {

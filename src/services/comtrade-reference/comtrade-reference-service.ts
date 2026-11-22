@@ -230,8 +230,8 @@ function hasWholeWordMatch(text: string, needle: string, from: number): boolean 
 
 /**
  * Catalog entries whose code starts with the query or whose description contains it. Exact code,
- * code prefix, whole-word description match and other phrase matches rank first. Goods can also
- * match on all terms. Ties keep catalog order so offset pages walk one fixed order. Codes and
+ * code prefix, whole-word description match and other phrase matches rank ahead of all-term
+ * description matches. Ties keep catalog order so offset pages walk one fixed order. Codes and
  * descriptions compare case-insensitively. A code-like goods query meets codes without its
  * separators, while descriptions still match it as typed.
  */
@@ -243,7 +243,7 @@ function rankCatalogMatches<T extends { id: string; text: string }>(
   const typed = query.toLowerCase();
   const normalizedCode = goods ? codeFromCodeLikeQuery(typed) : undefined;
   const code = normalizedCode ?? typed;
-  const words = goods && normalizedCode === undefined ? typed.trim().split(/\s+/u) : [];
+  const words = normalizedCode === undefined ? typed.trim().split(/\s+/u) : [];
   const terms = words.length > 1 ? [...new Set(words)] : [];
   const longestTerm = terms.reduce((length, term) => Math.max(length, term.length), 0);
   const tiers: [T[], T[], T[], T[], T[]] = [[], [], [], [], []];
@@ -477,11 +477,14 @@ export class ComtradeReferenceService {
     return index;
   }
 
-  /** Enrich a nonempty discovery page using successful edition indexes within one deadline. */
-  async enrichHsPage(
-    page: CommodityCode[],
+  /** Tag discovery codes with their H0–H6 membership, or return the original rows on failure. */
+  async tagHsEditions<T extends { id: string }>(
+    rows: T[],
     signal: AbortSignal,
-  ): Promise<{ matches: CommodityCode[]; unavailableCatalogs: string[] }> {
+  ): Promise<{
+    matches: (T & Pick<CommodityCode, 'editions'>)[];
+    unavailableCatalogs: string[];
+  }> {
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(HS_ENRICHMENT_TIMEOUT_MS)]);
     const loads = await Promise.allSettled(
       HS_EDITIONS.map((edition) => this.getCommodityCodes(edition, deadline)),
@@ -502,20 +505,33 @@ export class ComtradeReferenceService {
       const load = loads[index];
       return load?.status === 'rejected' || load?.value.size === 0;
     });
-    if (unavailableCatalogs.length > 0) return { matches: page, unavailableCatalogs };
+    if (unavailableCatalogs.length > 0) return { matches: rows, unavailableCatalogs };
 
-    const matches = page.map((match) => {
+    const matches = rows.map((match) => {
       const editions = HS_EDITIONS.filter((_, index) => {
         const load = loads[index];
         return load?.status === 'fulfilled' && load.value.has(match.id);
       });
-      const parentDescription =
-        !editions.includes('H6') && match.parent
-          ? this.hsByCode.get(match.parent)?.text
-          : undefined;
-      return { ...match, editions, ...(parentDescription !== undefined && { parentDescription }) };
+      return { ...match, editions };
     });
     return { matches, unavailableCatalogs };
+  }
+
+  /** Enrich commodity search with edition membership and historical discovery parent context. */
+  async enrichHsPage(
+    page: CommodityCode[],
+    signal: AbortSignal,
+  ): Promise<{ matches: CommodityCode[]; unavailableCatalogs: string[] }> {
+    const { matches, unavailableCatalogs } = await this.tagHsEditions(page, signal);
+    if (unavailableCatalogs.length > 0) return { matches, unavailableCatalogs };
+    const withParentContext = matches.map((match) => {
+      const parentDescription =
+        !match.editions?.includes('H6') && match.parent
+          ? this.hsByCode.get(match.parent)?.text
+          : undefined;
+      return parentDescription === undefined ? match : { ...match, parentDescription };
+    });
+    return { matches: withParentContext, unavailableCatalogs };
   }
 
   /**

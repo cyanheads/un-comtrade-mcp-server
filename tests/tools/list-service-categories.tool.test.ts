@@ -111,6 +111,38 @@ describe('listServiceCategoriesTool', () => {
     expect(result.shown).toBe(11);
   });
 
+  it('pages final-tier multi-word matches after contiguous phrases within a parent', async () => {
+    seedReferenceService([
+      { id: 'A', text: 'Insurance and pension services', parent: 'S' },
+      { id: 'B', text: 'Insurance pension funding', parent: 'S' },
+      { id: 'C', text: 'Pension funds and insurance', parent: 'S' },
+      { id: 'D', text: 'Insurance and pension services', parent: '200' },
+    ]);
+    const query = 'Insurance Pension';
+    const args = { query, parent_code: 's', limit: 1 };
+    let offset = 0;
+    for (const id of ['B', 'A', 'C']) {
+      const result = await runToolContract(listServiceCategoriesTool, { ...args, offset });
+      expect(listing(result)).toMatchObject({
+        categories: [{ id }],
+        totalMatches: 3,
+        shown: 1,
+        offset,
+      });
+      expect(contentText(result)).toContain(`**${id}** —`);
+      expect(listing(result).nextOffset).toBe(id === 'C' ? undefined : offset + 1);
+      offset += 1;
+    }
+    const pastEnd = await runToolContract(listServiceCategoriesTool, { ...args, offset });
+    expect(listing(pastEnd)).toMatchObject({
+      categories: [],
+      totalMatches: 3,
+      shown: 0,
+      offset: 3,
+    });
+    expect(contentText(pastEnd)).toContain('Offset 3 is past the end');
+  });
+
   it('filters by keyword query', async () => {
     const ctx = createMockContext();
     const input = listServiceCategoriesTool.input.parse({ query: 'transport' });
@@ -425,7 +457,7 @@ describe('listServiceCategoriesTool', () => {
     const { description } = listServiceCategoriesTool.output.shape.categories;
     expect(description).not.toContain('in catalog order');
     expect(description).toContain(
-      'ranked exact code, code prefix, whole-word description match, then other description matches',
+      'ranked exact code, code prefix, whole-word phrase, other contiguous phrase, then descriptions containing every query term in any order',
     );
   });
 

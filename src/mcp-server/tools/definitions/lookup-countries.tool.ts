@@ -89,7 +89,7 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
       .string()
       .optional()
       .describe(
-        'Recovery hint when no matches are found, or the goods and services codes to query for Taiwan (490 for goods reporter or partner and 158 for services partner).',
+        'Recovery hint when the query has no matches or role and group filters exclude them, or the goods and services codes to query for Taiwan (490 for goods reporter or partner and 158 for services partner).',
       ),
   },
 
@@ -99,9 +99,9 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
 
     const matched = ref.searchCountries(input.query, input.role === 'any' ? undefined : input.role);
     // A goods stand-in survives the group filter.
-    const results = input.include_groups
-      ? matched
-      : matched.filter((c) => !c.isGroup || c.standsInFor !== undefined);
+    const groupExcluded = (c: (typeof matched)[number]) =>
+      !input.include_groups && c.isGroup && c.standsInFor === undefined;
+    const results = matched.filter((c) => !groupExcluded(c));
 
     const publishedUnder = results.flatMap(({ id, name, standsInFor }) =>
       standsInFor
@@ -114,11 +114,26 @@ export const lookupCountriesTool = tool('comtrade_lookup_countries', {
 
     if (results.length === 0) {
       const query = escapeMarkdownInline(input.query);
-      ctx.enrich.notice(
-        matched.length > 0
-          ? `Only groupings matched "${query}" with role="${input.role}"; include_groups is false, so they are left out. Retry with include_groups true to list them.`
-          : `No countries or areas matched "${query}" with role="${input.role}". Try a shorter name fragment, check the spelling, or use an ISO code (e.g. "USA" or "US").`,
-      );
+      if (matched.length > 0) {
+        ctx.enrich.notice(
+          `Only groupings matched "${query}" with role="${input.role}"; include_groups is false, so they are left out. Retry with include_groups true to list them.`,
+        );
+      } else {
+        const excluded = input.role === 'any' ? [] : ref.searchCountries(input.query);
+        if (excluded.length > 0) {
+          const entries = excluded
+            .map((c) => `${escapeMarkdownInline(c.name)} (${c.id})`)
+            .join(', ');
+          const groups = excluded.some(groupExcluded) ? ' and include_groups=true' : '';
+          ctx.enrich.notice(
+            `Matches for "${query}" were excluded by role="${input.role}": ${entries}. Retry with role="any"${groups} to list them.`,
+          );
+        } else {
+          ctx.enrich.notice(
+            `No countries or areas matched "${query}" with role="${input.role}". Try a shorter name fragment, check the spelling, or use an ISO code (e.g. "USA" or "US").`,
+          );
+        }
+      }
       return {
         matches: [],
         totalMatches: 0,

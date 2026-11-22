@@ -39,7 +39,7 @@ type CategoryRow = z.infer<typeof categorySchema>;
 export const listServiceCategoriesTool = tool('comtrade_list_service_categories', {
   title: 'List Service Trade Categories (EB)',
   description:
-    'List service trade categories from the combined EB catalog, including numeric EBOPS and SDMX codes. Returns category codes, descriptions, parent codes, and the EBOPS scheme catalogs that list each code: EB10 (EBOPS 2010), EB10S (EBOPS 2010 SDMX codes), EB02 (EBOPS 2002). Filter by keyword (e.g. "transport", "financial", "travel") or browse direct children of a parent code; "200" lists the EB10 and EB02 top levels. Use the returned id as service_code in comtrade_get_services_trade. Code 3 is transport; SA is manufacturing services. Each page holds up to limit categories; continue with nextOffset using the same query and parent_code.',
+    'List service trade categories from the combined EB catalog, including numeric EBOPS and SDMX codes. Returns category codes, descriptions, parent codes, and the EBOPS scheme catalogs that list each code: EB10 (EBOPS 2010), EB10S (EBOPS 2010 SDMX codes), EB02 (EBOPS 2002). Search by keyword or by several terms in any order, or browse direct children of a parent code; "200" lists the EB10 and EB02 top levels. Use the returned id as service_code in comtrade_get_services_trade. Code 3 is transport; SA is manufacturing services. Each page holds up to limit categories; continue with nextOffset using the same query and parent_code.',
   annotations: { readOnlyHint: true, openWorldHint: false },
 
   input: z.object({
@@ -48,7 +48,7 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
       .trim()
       .optional()
       .describe(
-        'Keyword or category code prefix to filter results; codes compare case-insensitively and keep their dots. Examples: "transport", "SA", "3.1", "financial services". Omit, or leave blank, to list all EB categories.',
+        'Description keyword, phrase, whitespace-separated terms, or category code prefix. Description terms match case-insensitively in any order. Codes compare case-insensitively and keep their dots. Examples: "transport", "SA", "3.1", "insurance pension". Omit, or leave blank, to list all EB categories.',
       ),
     parent_code: z
       .string()
@@ -74,7 +74,7 @@ export const listServiceCategoriesTool = tool('comtrade_list_service_categories'
     categories: z
       .array(categorySchema)
       .describe(
-        'EB service categories on this page. With a query, ranked exact code, code prefix, whole-word description match, then other description matches; ties, and an unfiltered listing, keep catalog order.',
+        'EB service categories on this page. With a query, ranked exact code, code prefix, whole-word phrase, other contiguous phrase, then descriptions containing every query term in any order. Ties and unfiltered listings keep catalog order.',
       ),
     totalMatches: z.number().describe('Total matching categories across all pages.'),
     shown: z.number().describe('Number of categories returned on this page.'),
