@@ -282,6 +282,48 @@ describe('getTopCommoditiesTool', () => {
     },
   );
 
+  it('returns complete coverage immediately when the scoped request has no raw rows', async () => {
+    const catalog = useHierarchy([['85', 2]]);
+    fetchMock.mockResolvedValueOnce({ records: [], totalCount: 0, truncated: false });
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      parent_code: '85',
+      aggr_level: 4,
+    });
+    expect(result.structuredContent).toMatchObject({
+      parentCode: '85',
+      commodities: [],
+      totalCommodities: 0,
+      coverageComplete: true,
+      truncated: false,
+      missingCodes: [],
+    });
+    expect(result.structuredContent).not.toHaveProperty('denominatorValueUsd');
+    expect(textOf(result)).toContain('Coverage complete: true; truncated: false.');
+    expect(textOf(result)).toContain('Parent code: 85');
+    expect(fetchMock.mock.calls.map(([params]) => params.cmdCode)).toEqual(['TOTAL,85']);
+    expect(catalog).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { totalCount: 1, truncated: false },
+    { totalCount: 0, truncated: true },
+  ])('keeps an empty normalized scoped response unresolved with metadata %o', async (metadata) => {
+    fetchMock.mockResolvedValueOnce({ records: [], ...metadata });
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      parent_code: '85',
+      aggr_level: 4,
+    });
+    expect(result.structuredContent).toMatchObject({
+      commodities: [],
+      coverageComplete: false,
+      truncated: true,
+    });
+    expect(textOf(result)).toContain('Matching TOTAL did not identify one complete HS edition');
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it.each(['absent parent', 'unresolved edition', 'unavailable catalog'] as const)(
     'returns scoped empty coverage for %s without falling back to AG',
     async (failure) => {
@@ -292,14 +334,11 @@ describe('getTopCommoditiesTool', () => {
       if (failure === 'unavailable catalog')
         catalog.mockRejectedValueOnce(new Error('Unavailable'));
       fetchMock.mockResolvedValueOnce({
-        records:
-          failure === 'unresolved edition'
-            ? []
-            : rowsOf([['TOTAL', 500, 'Total']], 2).map((row) => ({
-                ...row,
-                classificationCode: 'H6',
-              })),
-        totalCount: failure === 'unresolved edition' ? 0 : 1,
+        records: rowsOf([['TOTAL', 500, 'Total']], 2).map((row) => ({
+          ...row,
+          classificationCode: failure === 'unresolved edition' ? 'HS' : 'H6',
+        })),
+        totalCount: 1,
         truncated: false,
       });
       const result = await runToolContract(getTopCommoditiesTool, {

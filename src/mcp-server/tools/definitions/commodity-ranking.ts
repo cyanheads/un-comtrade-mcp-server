@@ -109,8 +109,8 @@ export async function retrieveCommodityRanking(
         callerSignal,
         deadlineAt,
       );
-      // TOTAL sums every commodity: when UN Comtrade returns no TOTAL row at all, no commodity has one.
-      if (!parentCode && total.records.length === 0 && total.totalCount === 0) {
+      // The combined scoped query also includes TOTAL; only a genuinely empty response settles coverage.
+      if (!total.truncated && total.records.length === 0 && total.totalCount === 0) {
         return {
           records: [],
           coverageComplete: true,
