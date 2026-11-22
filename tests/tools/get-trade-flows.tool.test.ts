@@ -17,6 +17,7 @@ import {
   initComtradeReferenceService,
 } from '@/services/comtrade-reference/comtrade-reference-service.js';
 import type { ReporterStatus } from '@/services/comtrade-reference/types.js';
+import { readTradeTable } from '../fixtures/read-trade-table.js';
 
 const mockConfig = {} as Parameters<typeof initComtradeDataService>[0];
 const mockStorage = {} as Parameters<typeof initComtradeDataService>[1];
@@ -75,17 +76,7 @@ describe('getTradeFlowsTool', () => {
       period: ['2022'],
     });
     expect(result.structuredContent).toMatchObject({ records: [expect.objectContaining(values)] });
-    for (const value of [
-      'H0',
-      'qtyUnitCode: 8',
-      'kg',
-      'altQty: 0',
-      'altQtyUnitCode: 5',
-      'altQtyUnitAbbr: u',
-      'isQtyEstimated: false',
-      'isNetWgtEstimated: false',
-    ])
-      expect(JSON.stringify(result.content)).toContain(value);
+    expect(readTradeTable(textOf(result))).toEqual([{ ...RECORD_USA_DEU, ...values }]);
   });
   it('deduplicates reporters, serves 20, and discloses unserved reporters', async () => {
     const spy = vi
@@ -394,6 +385,7 @@ describe('getTradeFlowsTool', () => {
       records: [RECORD_USA_DEU],
       totalCount: 1,
       shown: 1,
+      offset: 0,
       truncated: false,
     };
     const blocks = getTradeFlowsTool.format!(output);
@@ -406,7 +398,7 @@ describe('getTradeFlowsTool', () => {
     expect(text).toContain('2022');
     expect(text).toContain('X');
     expect(text).toContain('84');
-    expect(text).toContain('5,000,000');
+    expect(readTradeTable(text)).toEqual([RECORD_USA_DEU]);
   });
 
   it('formats sparse record without fabricating absent values', () => {
@@ -414,6 +406,7 @@ describe('getTradeFlowsTool', () => {
       records: [RECORD_SPARSE],
       totalCount: 1,
       shown: 1,
+      offset: 0,
       truncated: false,
     };
     const blocks = getTradeFlowsTool.format!(output);
@@ -421,7 +414,7 @@ describe('getTradeFlowsTool', () => {
     expect(text).toContain('TOTAL');
     expect(text).toContain('World');
     // Sparse fields should not appear since format() only renders non-null fields
-    expect(text).not.toContain('Primary Value:');
+    expect(readTradeTable(text)).toEqual([RECORD_SPARSE]);
   });
 
   it('formats truncation hint when truncated', () => {
@@ -429,6 +422,7 @@ describe('getTradeFlowsTool', () => {
       records: [],
       totalCount: 500,
       shown: 0,
+      offset: 0,
       truncated: true,
       truncationHint: 'Set COMTRADE_SUBSCRIPTION_KEY for full access.',
     };
@@ -929,12 +923,12 @@ describe('getTradeFlowsTool on the keyless data service', () => {
       qty: 1_077_072_475.819,
       qtyUnitCode: 8,
       netWgt: 1_077_072_475.819,
-      altQtyUnitCode: -1,
-      altQtyUnitAbbr: 'N/A',
       isQtyEstimated: true,
       isNetWgtEstimated: true,
     });
     expect(coffee).not.toHaveProperty('altQty');
+    expect(coffee).not.toHaveProperty('altQtyUnitCode');
+    expect(coffee).not.toHaveProperty('altQtyUnitAbbr');
     expect(coffee).not.toHaveProperty('grossWgt');
     expect(tea).toMatchObject({
       primaryValue: 0,
@@ -945,17 +939,6 @@ describe('getTradeFlowsTool on the keyless data service', () => {
       netWgt: 0,
       grossWgt: 0,
     });
-    const [, coffeeText, teaText] = textOf(result).split('\n\n**');
-    for (const line of [
-      'Quantity: 1,077,072,475.819',
-      'Net Weight: 1,077,072,475.819 kg',
-      'altQtyUnitCode: -1',
-      'isQtyEstimated: true',
-    ])
-      expect(coffeeText).toContain(line);
-    expect(coffeeText).not.toContain('altQty: ');
-    expect(coffeeText).not.toContain('Gross Weight');
-    for (const line of ['Quantity: 0', 'altQty: 0', 'Net Weight: 0 kg', 'Gross Weight: 0 kg'])
-      expect(teaText).toContain(line);
+    expect(readTradeTable(textOf(result))).toEqual([coffee, tea]);
   });
 });

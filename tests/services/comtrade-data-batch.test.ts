@@ -933,13 +933,13 @@ describe('trade data request and normalization boundaries', () => {
       qty: 0,
       qtyUnitCode: 8,
       qtyUnitAbbr: 'kg',
-      altQtyUnitCode: -1,
-      altQtyUnitAbbr: 'N/A',
       isQtyEstimated: false,
       isNetWgtEstimated: true,
     });
     // UN Comtrade's 0 beside unit -1 is "not reported", not a measured zero.
     expect(result.records[0]).not.toHaveProperty('altQty');
+    expect(result.records[0]).not.toHaveProperty('altQtyUnitCode');
+    expect(result.records[0]).not.toHaveProperty('altQtyUnitAbbr');
   });
   it('omits zero quantity and weight placeholders, keeping zeros in real units and flags', async () => {
     const units = { qtyUnitAbbr: 'kg', altQtyUnitAbbr: 'N/A' };
@@ -979,31 +979,54 @@ describe('trade data request and normalization boundaries', () => {
           { ...row, cmdCode: '01', primaryValue: 0, netWgt: 0, grossWgt: 0 },
           { ...row, cmdCode: '02', primaryValue: null, netWgt: 0 },
           { ...row, cmdCode: '03', qty: 0, qtyUnitCode: 5, altQty: 0, altQtyUnitCode: 8, ...units },
+          {
+            ...row,
+            cmdCode: '04',
+            qty: null,
+            qtyUnitCode: -1,
+            qtyUnitAbbr: 'N/A',
+            altQty: 1,
+            altQtyUnitCode: -1,
+            altQtyUnitAbbr: 'N/A',
+          },
         ],
       }),
     );
-    const [coffee, total, noValue, nullValue, realUnits] = (
-      await finish(svc.fetchTradeData({ ...params, partnerCode: 0, cmdCode: '0901,01,02,03' }))
+    const [coffee, total, noValue, nullValue, realUnits, unknownUnit] = (
+      await finish(svc.fetchTradeData({ ...params, partnerCode: 0, cmdCode: '0901,01,02,03,04' }))
     ).records;
     expect(coffee).toMatchObject({
       qty: 1_077_072_475.819,
       netWgt: 1_077_072_475.819,
-      altQtyUnitCode: -1,
       isQtyEstimated: true,
       isNetWgtEstimated: true,
     });
     expect(coffee).not.toHaveProperty('altQty');
+    expect(coffee).not.toHaveProperty('altQtyUnitCode');
+    expect(coffee).not.toHaveProperty('altQtyUnitAbbr');
     expect(coffee).not.toHaveProperty('grossWgt');
     expect(total).toMatchObject({
-      qtyUnitCode: -1,
       isQtyEstimated: false,
       isNetWgtEstimated: true,
     });
-    for (const field of ['qty', 'altQty', 'netWgt', 'grossWgt'])
+    for (const field of [
+      'qty',
+      'qtyUnitCode',
+      'qtyUnitAbbr',
+      'altQty',
+      'altQtyUnitCode',
+      'altQtyUnitAbbr',
+      'netWgt',
+      'grossWgt',
+    ])
       expect(total).not.toHaveProperty(field);
     expect(noValue).toMatchObject({ primaryValue: 0, netWgt: 0, grossWgt: 0 });
     expect(nullValue).toMatchObject({ netWgt: 0 });
     expect(realUnits).toMatchObject({ qty: 0, qtyUnitCode: 5, altQty: 0, altQtyUnitCode: 8 });
+    expect(unknownUnit).toMatchObject({ altQty: 1, altQtyUnitCode: -1, altQtyUnitAbbr: 'N/A' });
+    for (const field of ['qty', 'qtyUnitCode', 'qtyUnitAbbr']) {
+      expect(unknownUnit).not.toHaveProperty(field);
+    }
   });
   it('omits zero CIF and FOB placeholders beside a positive value, keeping other zeros', async () => {
     fetchMock.mockImplementation(async () =>
@@ -1164,10 +1187,10 @@ describe('trade data request and normalization boundaries', () => {
     expect(result.records[0]).toMatchObject({
       qtyUnitCode: 999,
       qty: 0,
-      altQtyUnitCode: -1,
       isQtyEstimated: false,
     });
     expect(result.records[0]).not.toHaveProperty('altQty');
+    expect(result.records[0]).not.toHaveProperty('altQtyUnitCode');
     expect(result.records[0]).not.toHaveProperty('qtyUnitAbbr');
     expect(result.referenceNotice).toContain('Quantity unit references are unavailable');
   });

@@ -198,7 +198,8 @@ it('SITC flows preserve levels without HS labels and disclose reference failure 
   expect(result.structuredContent).toMatchObject({
     records: [expect.objectContaining({ aggrLevel: 2, primaryValue: 10 })],
   });
-  expect(JSON.stringify(result.content)).toContain('aggregation level 2');
+  expect(JSON.stringify(result.content)).toContain('primaryValue | aggrLevel |');
+  expect(JSON.stringify(result.content)).toContain('`10` | `2` |');
   expect(JSON.stringify(result.content)).not.toContain('HS-');
   for (const surface of [result.structuredContent, result.content])
     expect(JSON.stringify(surface)).toContain('Reference descriptions unavailable');
@@ -297,20 +298,28 @@ it.each([getTradeFlowsTool, getServicesTradeTool])(
       totalCount: 500,
       truncated: true,
       truncationHint: 'may be incomplete',
+      referenceNotice: 'Reference descriptions are unavailable.',
       failedPeriods: [{ period: '2023', reason: 'upstream_unavailable', status: 503 }],
     });
     const result = await runToolContract(definition, {
       reporter_code: 842,
       flow_code: 'X',
       period: ['2022', '2023'],
+      offset: 1,
+      limit: 1,
     });
     for (const surface of [result.structuredContent, result.content]) {
       const data = JSON.stringify(surface);
       expect(data).toContain('World (partner 0) overlaps the partner breakdown');
       expect(data).toContain('503');
+      expect(data).toContain('Reference descriptions are unavailable.');
       expect(data).toContain('may be incomplete');
     }
-    expect(result.structuredContent).toMatchObject({ shown: 2, unservedPeriods: ['2023'] });
+    expect(result.structuredContent).toMatchObject({
+      shown: 1,
+      records: [expect.objectContaining({ partnerCode: 156 })],
+      unservedPeriods: ['2023'],
+    });
   },
 );
 
@@ -318,7 +327,7 @@ it('trade flows disclose missing served codes alongside the World warning and ed
   vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockResolvedValue({
     records: [
       { ...record, classificationCode: 'H6', primaryValue: 0 },
-      { ...record, classificationCode: 'H6', partnerCode: 156 },
+      { ...record, classificationCode: 'H6', partnerCode: 156, cmdCode: '12' },
     ],
     totalCount: 2,
     truncated: false,
@@ -327,9 +336,14 @@ it('trade flows disclose missing served codes alongside the World warning and ed
     reporter_code: 842,
     flow_code: 'X',
     period: ['2022'],
-    cmd_code: [' ag2 ', '11', '15', '15'],
+    cmd_code: [' ag2 ', '11', '12', '15', '15'],
+    offset: 1,
+    limit: 1,
   });
-  expect(result.structuredContent).toMatchObject({ cmdCodesWithoutRecords: ['15'] });
+  expect(result.structuredContent).toMatchObject({
+    cmdCodesWithoutRecords: ['15'],
+    records: [expect.objectContaining({ partnerCode: 156, cmdCode: '12' })],
+  });
   for (const surface of [result.structuredContent, result.content]) {
     const data = JSON.stringify(surface);
     expect(data).toContain('World (partner 0) overlaps the partner breakdown');

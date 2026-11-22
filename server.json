@@ -22,6 +22,12 @@
       "version": "0.4.0",
       "environmentVariables": [
         {
+          "name": "COMTRADE_CLAMP_LIMITS",
+          "description": "Serve up to 1,000 goods or services records when a larger page is requested. Set false to reject oversized page requests.",
+          "format": "boolean",
+          "default": "true"
+        },
+        {
           "name": "COMTRADE_SUBSCRIPTION_KEY",
           "description": "Azure API Management key from comtradedeveloper.un.org. Optional — without it, tools fall back to the public preview endpoint (500-record cap).",
           "format": "string",
@@ -46,6 +52,12 @@
       "runtimeHint": "npx",
       "version": "0.4.0",
       "environmentVariables": [
+        {
+          "name": "COMTRADE_CLAMP_LIMITS",
+          "description": "Serve up to 1,000 goods or services records when a larger page is requested. Set false to reject oversized page requests.",
+          "format": "boolean",
+          "default": "true"
+        },
         {
           "name": "MCP_TRANSPORT_TYPE",
           "description": "Selects the HTTP transport.",

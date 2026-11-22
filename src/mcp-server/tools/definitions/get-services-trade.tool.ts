@@ -13,116 +13,22 @@ import {
   m49Schema,
   servicesClassificationSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
+import { mixedPartnerBreakdownNotice } from '@/mcp-server/tools/reporter-notice.js';
+import { servicesEmptyNotice } from '@/mcp-server/tools/services-empty-notice.js';
 import {
-  counterpartNotices,
-  mixedPartnerBreakdownNotice,
-} from '@/mcp-server/tools/reporter-notice.js';
+  applyTradeLimit,
+  formatTradePage,
+  limitClampSchema,
+  renderLimitClamp,
+  tradePage,
+  tradePageInput,
+  tradePageOutput,
+} from '@/mcp-server/tools/trade-page.js';
 import {
   describePeriodFailures,
   getComtradeDataService,
   TRADE_DATA_DEADLINE_MS,
 } from '@/services/comtrade-data/comtrade-data-service.js';
-import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
-import type { EbScheme } from '@/services/comtrade-reference/types.js';
-
-/** A services classification the trade endpoint serves. */
-type ServicesClassification = z.output<typeof servicesClassificationSchema>;
-
-const AVAILABILITY_ROUTE =
-  'Use comtrade_get_data_availability with type_code="S" and classification="EB" to check coverage and the scheme each period was reported in.';
-
-/**
- * The scheme catalogs listing a service code: `undefined` when they did not load, or did not
- * answer before `deadlineAt` (the call's budget, shared with the data fetch). The first lookup
- * loads three catalogs; later ones read the cache. Caller cancellation propagates.
- */
-async function serviceCodeSchemes(
-  code: string,
-  signal: AbortSignal,
-  deadlineAt: number,
-): Promise<readonly EbScheme[] | undefined> {
-  // A timer rather than AbortSignal.timeout: it is cleared when the lookup settles.
-  const budget = new AbortController();
-  const timer = setTimeout(
-    () => budget.abort(new DOMException('The call budget ran out.', 'TimeoutError')),
-    Math.max(0, deadlineAt - Date.now()),
-  );
-  try {
-    // The whole listing, matched by equality: the code never reaches the keyword scan.
-    const listing = await getComtradeReferenceService().getServiceCategories(
-      undefined,
-      AbortSignal.any([signal, budget.signal]),
-    );
-    if (listing.status === 'untagged') return;
-    // codeSchema uppercases; EB.json keeps a few lowercase ids (3a.3.1).
-    return listing.categories.find((category) => category.id.toUpperCase() === code)?.schemes ?? [];
-  } catch (error) {
-    if (signal.aborted || !budget.signal.aborted) throw error;
-    return;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Why a services query returned no rows. A partner-only reporter code, or a partner code with a
- * reporter-valid counterpart, ends it with the code to query instead. Otherwise it explains a
- * converted series, names the requested code's EB scheme, and routes to availability under EB,
- * where each period shows the scheme it was reported in.
- */
-async function emptyResultNotice(
-  input: {
-    reporter_code: number;
-    flow_code: string;
-    partner_code?: number | undefined;
-    service_code?: string | undefined;
-  },
-  classification: ServicesClassification,
-  servedPeriods: readonly string[],
-  signal: AbortSignal,
-  deadlineAt: number,
-): Promise<string> {
-  const sentences = [
-    `No services trade records found for reporter ${input.reporter_code}, flow=${input.flow_code}, periods=[${servedPeriods.join(', ')}].`,
-  ];
-  const taiwanPartner = input.partner_code === 490;
-  if (taiwanPartner) sentences.push('Use partner_code 158 for Taiwan services.');
-  const counterparts = counterpartNotices(
-    getComtradeReferenceService(),
-    input.reporter_code,
-    input.partner_code,
-    'S',
-  );
-  sentences.push(...counterparts);
-  if (counterparts.length > 0 && !taiwanPartner) return sentences.join(' ');
-  if (classification !== 'EB')
-    sentences.push(
-      `${classification} serves UN Comtrade's conversions from other schemes; rows reported in ${classification} itself are served under classification "EB".`,
-    );
-  const code = input.service_code;
-  const schemes = code ? await serviceCodeSchemes(code, signal, deadlineAt) : [];
-  if (schemes === undefined) {
-    sentences.push(
-      `The EB scheme catalogs did not load, so service code ${code} is not matched to a scheme.`,
-    );
-  } else if (schemes.length > 0) {
-    const listed = `Service code ${code} belongs to ${schemes.join(' and ')}`;
-    sentences.push(
-      classification === 'EB'
-        ? `${listed}; EB serves each reporter-period in the scheme it was reported in, so a period reported in another scheme has no rows for this code.`
-        : `${listed}.`,
-    );
-  }
-  sentences.push(AVAILABILITY_ROUTE);
-  // EB10S has no converted series, so only EB10 and EB02 are levers.
-  const converted = schemes?.filter((scheme) => scheme !== 'EB10S') ?? [];
-  if (classification === 'EB' && converted.length > 0) {
-    sentences.push(
-      `Set classification to ${converted.map((scheme) => `"${scheme}"`).join(' or ')} for UN Comtrade's converted series.`,
-    );
-  }
-  return sentences.join(' ');
-}
 
 const ServicesFlowRecordSchema = z
   .object({
@@ -152,7 +58,7 @@ const ServicesFlowRecordSchema = z
 export const getServicesTradeTool = tool('comtrade_get_services_trade', {
   title: 'Get Services Trade Data',
   description:
-    "Fetch annual international trade-in-services data. Classification EB (default) serves each reporter-period as reported, in its own scheme (EB10, EB10S or EB02 codes); EB10 or EB02 selects UN Comtrade's conversion of other schemes into that one. Each row names its classification and whether it is original or converted. Same bilateral structure as goods trade: returns flow value in USD, period, and reporter/partner/category metadata for each row. Use comtrade_list_service_categories to find a service code and its scheme before querying. Keyless preview makes one request per served period, at least 4 seconds apart, capped at 500 records per request. Services coverage is more limited than goods trade.",
+    "Fetch annual international trade-in-services data. Classification EB (default) serves each reporter-period as reported, in its own scheme (EB10, EB10S or EB02 codes); EB10 or EB02 selects UN Comtrade's conversion of other schemes into that one. Each row names its classification and whether it is original or converted. Same bilateral structure as goods trade: returns flow value in USD, period, and reporter/partner/category metadata for each row. Follow nextOffset for remaining records; each page repeats the upstream period requests. Use comtrade_list_service_categories to find a service code and its scheme before querying. Keyless preview makes one request per served period, at least 4 seconds apart, capped at 500 records per request. Services coverage is more limited than goods trade.",
   annotations: { readOnlyHint: true, openWorldHint: true },
   errors: [
     {
@@ -205,6 +111,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
   ],
 
   input: z.object({
+    ...tradePageInput,
     reporter_code: m49Schema.describe('M49 numeric code of the reporting country (0–999).'),
     flow_code: flowSchema.describe('Trade flow: M=imports (debits), X=exports (credits).'),
     period: z
@@ -236,7 +143,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       .describe(
         'Sum of upstream response counts before local filtering; not a full match count when capped.',
       ),
-    shown: z.number().describe('Number of records returned.'),
+    ...tradePageOutput,
     truncated: z
       .boolean()
       .describe('True when any preview response reached 500 and may be incomplete.'),
@@ -247,6 +154,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
   }),
 
   enrichment: {
+    limitClamp: limitClampSchema,
     referenceNotice: z
       .string()
       .optional()
@@ -266,12 +174,14 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
   },
 
   enrichmentTrailer: {
+    limitClamp: { render: renderLimitClamp },
     unservedPeriods: {
       render: (periods) =>
         periods ? `**Unserved periods:** ${periods.join(', ')}. Query them separately.` : '',
     },
   },
   async handler(input, ctx) {
+    const limit = applyTradeLimit(input.limit, ctx, 'comtrade_get_services_trade');
     // One budget for the data fetch and the empty-result scheme lookup.
     const deadlineAt = Date.now() + TRADE_DATA_DEADLINE_MS;
     const { classification } = input;
@@ -301,6 +211,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
       ctx.signal,
       deadlineAt,
     );
+    ctx.signal.throwIfAborted();
     if (result.referenceNotice) ctx.enrich({ referenceNotice: result.referenceNotice });
     const failed = new Set(result.failedPeriods?.map((failure) => failure.period));
     const unservedPeriods = [
@@ -314,7 +225,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     if (mixedBreakdown) notices.push(mixedBreakdown);
     if (result.records.length === 0) {
       notices.push(
-        await emptyResultNotice(
+        await servicesEmptyNotice(
           input,
           classification,
           periods.filter((period) => !failed.has(period)),
@@ -323,44 +234,23 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
         ),
       );
     }
+    ctx.signal.throwIfAborted();
+    const page = tradePage(
+      result.records.map((record) => ServicesFlowRecordSchema.parse(record)),
+      input.offset,
+      limit,
+      notices,
+    );
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     return {
-      records: result.records.map((record) => ServicesFlowRecordSchema.parse(record)),
+      ...page,
       totalCount: result.totalCount,
-      shown: result.records.length,
       truncated: result.truncated,
       ...(result.truncationHint && { truncationHint: result.truncationHint }),
     };
   },
 
-  format: (result) => {
-    const lines = [
-      `## Services Trade Records`,
-      `**Records:** ${result.shown} of ${result.totalCount}`,
-    ];
-    if (result.truncated && result.truncationHint) {
-      lines.push(`\n> **Truncated:** ${result.truncationHint}`);
-    }
-    for (const r of result.records) {
-      lines.push(
-        `\n**${r.reporterDesc}** (${r.reporterCode}) → **${r.partnerDesc}** (${r.partnerCode}) | ${r.period} | ${r.flowCode}`,
-      );
-      lines.push(`Service: ${r.cmdCode} — ${r.cmdDesc}`);
-      if (r.classificationCode !== undefined)
-        lines.push(`classificationCode: ${r.classificationCode}`);
-      if (r.isOriginalClassification != null) {
-        lines.push(
-          `Original classification: ${r.isOriginalClassification ? 'Yes (as reported)' : 'No (converted by UN Comtrade)'}`,
-        );
-      }
-      if (r.primaryValue != null) {
-        lines.push(`Value: $${r.primaryValue.toLocaleString()} USD`);
-      }
-      if (r.isReported != null) {
-        lines.push(`Reported: ${r.isReported ? 'Yes (direct)' : 'No (estimated)'}`);
-      }
-    }
-    return [{ type: 'text', text: lines.join('\n') }];
-  },
+  format: (result) =>
+    formatTradePage('Services Trade Records', result, Object.keys(ServicesFlowRecordSchema.shape)),
 });

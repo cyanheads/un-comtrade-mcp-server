@@ -7,6 +7,7 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
+  clampLimits: z.stringbool().default(true),
   subscriptionKey: z
     .string()
     .optional()
@@ -28,8 +29,14 @@ let _config: ServerConfig | undefined;
 /** Lazy-parsed server config from environment variables. Throws ConfigurationError on invalid values. */
 export function getServerConfig(): ServerConfig {
   _config ??= parseEnvConfig(ServerConfigSchema, {
+    clampLimits: 'COMTRADE_CLAMP_LIMITS',
     subscriptionKey: 'COMTRADE_SUBSCRIPTION_KEY',
     apiBaseUrl: 'COMTRADE_API_BASE_URL',
   });
   return _config;
+}
+
+/** Read the paging policy after startup has parsed configuration. */
+export function clampTradeLimits(): boolean {
+  return _config?.clampLimits ?? true;
 }

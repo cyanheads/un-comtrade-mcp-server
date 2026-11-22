@@ -311,6 +311,43 @@ describe('ComtradeDataService.fetchTradeData', () => {
    * by partnerCode keeping max primaryValue, eliminating duplicate partner rows.
    */
   describe('issue #5 — per-partner duplicate elimination', () => {
+    it.each([false, true])(
+      'keeps the same goods row when equal-value variants reverse (reversed=%s)',
+      async (reverse) => {
+        const base = {
+          reporterCode: 276,
+          period: '2022',
+          cmdCode: 'TOTAL',
+          flowCode: 'X',
+          primaryValue: 10,
+          customsCode: 'C00',
+          partner2Code: 0,
+          qtyUnitAbbr: 'kg',
+          qtyUnitCode: 8,
+        };
+        const rows = [
+          { ...base, partnerCode: 616, motCode: 1, qty: 9 },
+          { ...base, partnerCode: 616, motCode: 0, qty: 7 },
+          { ...base, partnerCode: 528, motCode: 1, qty: 3 },
+          { ...base, partnerCode: 528, motCode: 1, qty: 4 },
+          { ...base, partnerCode: 156, primaryValue: null, motCode: 0 },
+          { ...base, partnerCode: 156, primaryValue: 0, motCode: 1 },
+        ];
+        stubFetch(makeResponse(reverse ? rows.toReversed() : rows));
+        const result = await svc.fetchTradeData({
+          reporterCode: 276,
+          period: '2022',
+          cmdCode: 'TOTAL',
+          flowCode: 'X',
+        });
+        expect(result.records.toSorted((a, b) => a.partnerCode - b.partnerCode)).toMatchObject([
+          { partnerCode: 156, primaryValue: 0 },
+          { partnerCode: 528, qty: 3 },
+          { partnerCode: 616, qty: 7 },
+        ]);
+      },
+    );
+
     it('deduplicates Poland (616) to a single record by max primaryValue', async () => {
       stubFetch(makeResponse(PER_PARTNER_RAW_ROWS));
 

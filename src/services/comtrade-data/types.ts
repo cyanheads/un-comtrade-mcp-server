@@ -55,6 +55,7 @@ export interface TradeFlowRecord {
   aggrLevel?: number;
   /** Alternate quantity in its own unit; absent when not reported (0 with unit code -1). */
   altQty?: number;
+  /** Alternate unit metadata; omitted when the quantity is missing and the code is -1. */
   altQtyUnitAbbr?: string;
   altQtyUnitCode?: number;
   /** CIF value in USD; absent when not reported (0 beside a positive trade value). */
@@ -91,7 +92,7 @@ export interface TradeFlowRecord {
   /** Quantity in commodity-specific units; absent when not reported (0 with unit code -1). */
   qty?: number;
   qtyUnitAbbr?: string;
-  /** Quantity unit identity and abbreviation; -1/N/A means unavailable. */
+  /** Quantity unit identity; omitted when the quantity is missing and the code is -1. */
   qtyUnitCode?: number;
   /** M49 reporter code. */
   reporterCode: number;

@@ -18,7 +18,8 @@
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
-        "COMTRADE_SUBSCRIPTION_KEY": "${user_config.comtrade_subscription_key}"
+        "COMTRADE_SUBSCRIPTION_KEY": "${user_config.comtrade_subscription_key}",
+        "COMTRADE_CLAMP_LIMITS": "${user_config.comtrade_clamp_limits}"
       }
     }
   },
@@ -30,6 +31,13 @@
   "tools_generated": true,
   "prompts_generated": true,
   "user_config": {
+    "comtrade_clamp_limits": {
+      "type": "boolean",
+      "title": "Clamp trade page limits",
+      "description": "Serve up to 1,000 goods or services records when a larger page is requested. Disable to reject oversized page requests.",
+      "default": true,
+      "required": false
+    },
     "comtrade_subscription_key": {
       "type": "string",
       "title": "UN Comtrade Subscription Key",

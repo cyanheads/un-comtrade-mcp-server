@@ -17,6 +17,7 @@ import {
   initComtradeReferenceService,
 } from '@/services/comtrade-reference/comtrade-reference-service.js';
 import type { ReporterStatus } from '@/services/comtrade-reference/types.js';
+import { readTradeTable } from '../fixtures/read-trade-table.js';
 
 const mockConfig = {} as Parameters<typeof initComtradeDataService>[0];
 const mockStorage = {} as Parameters<typeof initComtradeDataService>[1];
@@ -272,8 +273,7 @@ describe('getServicesTradeTool', () => {
     const output = getServicesTradeTool.output.parse(result.structuredContent);
     expect(output.records.map((record) => record.isOriginalClassification)).toEqual([false, true]);
     const text = textOf(result);
-    expect(text).toContain('Original classification: No (converted by UN Comtrade)');
-    expect(text).toContain('Original classification: Yes (as reported)');
+    expect(readTradeTable(text)).toEqual(output.records);
   });
 
   it.each([
@@ -683,6 +683,7 @@ describe('getServicesTradeTool', () => {
       records: [SERVICES_RECORD],
       totalCount: 1,
       shown: 1,
+      offset: 0,
       truncated: false,
     };
     const blocks = getServicesTradeTool.format!(output);
@@ -696,7 +697,7 @@ describe('getServicesTradeTool', () => {
     expect(text).toContain('X');
     expect(text).toContain('SA');
     expect(text).toContain('Manufacturing services');
-    expect(text).toContain('80,000,000,000');
+    expect(readTradeTable(text)).toEqual([SERVICES_RECORD]);
   });
 
   it('describes an omitted service_code as mixed levels whose totals must not be summed', () => {
@@ -718,13 +719,18 @@ describe('getServicesTradeTool', () => {
       period: '2022',
       // primaryValue and isReported omitted
     };
-    const output = { records: [sparseRecord], totalCount: 1, shown: 1, truncated: false };
+    const output = {
+      records: [sparseRecord],
+      totalCount: 1,
+      shown: 1,
+      offset: 0,
+      truncated: false,
+    };
     const blocks = getServicesTradeTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('Germany');
     // isReported should not appear since it's absent
-    expect(text).not.toContain('Reported:');
-    expect(text).not.toContain('Original classification:');
+    expect(readTradeTable(text)).toEqual([sparseRecord]);
   });
 });
 
@@ -786,7 +792,9 @@ describe('getServicesTradeTool on the keyless data service', () => {
         primaryValue: 33_757_579_931.91,
       }),
     ]);
-    expect(textOf(result)).toContain('Original classification: No (converted by UN Comtrade)');
+    expect(readTradeTable(textOf(result))).toEqual(
+      getServicesTradeTool.output.parse(result.structuredContent).records,
+    );
   });
   it('serves the periods around one UN Comtrade cannot be reached for, naming it on both surfaces', async () => {
     fetchMock.mockImplementation(async (input) => {

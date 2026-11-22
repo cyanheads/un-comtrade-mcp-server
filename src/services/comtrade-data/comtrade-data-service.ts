@@ -42,6 +42,10 @@ const KEYED_PERIODS_PER_CALL = 12;
 const nullableNumber = z.number().nullish();
 const nullableString = z.string().nullish();
 const nullableBoolean = z.boolean().nullish();
+
+function missingUnit(quantity: number | null | undefined, code: number | null | undefined) {
+  return code === -1 && (quantity == null || quantity === 0);
+}
 const rawTradeSchema = z.object({
   count: z.number().nonnegative().optional(),
   data: z.array(
@@ -79,6 +83,26 @@ const rawTradeSchema = z.object({
     }),
   ),
 });
+
+type RawTradeRow = z.output<typeof rawTradeSchema>['data'][number];
+
+function isAggregateDimension(row: RawTradeRow): boolean {
+  return row.motCode === 0 && row.customsCode === 'C00' && row.partner2Code === 0;
+}
+
+/** Keep the highest partner value. A tie prefers a reported value and all dimensions combined. */
+function preferPartnerRow(candidate: RawTradeRow, current: RawTradeRow): boolean {
+  const candidateValue = candidate.primaryValue ?? 0;
+  const currentValue = current.primaryValue ?? 0;
+  if (candidateValue !== currentValue) return candidateValue > currentValue;
+  if ((candidate.primaryValue == null) !== (current.primaryValue == null)) {
+    return candidate.primaryValue != null;
+  }
+  const aggregate = isAggregateDimension(candidate);
+  if (aggregate !== isAggregateDimension(current)) return aggregate;
+  // Parsed rows follow the schema's key order, so equal-value variants repeat across page fetches.
+  return JSON.stringify(candidate) < JSON.stringify(current);
+}
 
 function malformedResponse(): McpError {
   return new McpError(
@@ -549,8 +573,10 @@ export class ComtradeDataService {
     if (
       rows.some(
         (row) =>
-          (row.qtyUnitCode != null && !row.qtyUnitAbbr) ||
-          (row.altQtyUnitCode != null && !row.altQtyUnitAbbr),
+          (row.qtyUnitCode != null && !missingUnit(row.qty, row.qtyUnitCode) && !row.qtyUnitAbbr) ||
+          (row.altQtyUnitCode != null &&
+            !missingUnit(row.altQty, row.altQtyUnitCode) &&
+            !row.altQtyUnitAbbr),
       )
     ) {
       try {
@@ -586,9 +612,7 @@ export class ComtradeDataService {
     if (!isServicesQuery) {
       if (params.partnerCode !== undefined) {
         // Explicit partner: retain nonoverlapping totals across the dimensions.
-        filteredRows = rows.filter(
-          (r) => r.motCode === 0 && r.customsCode === 'C00' && r.partner2Code === 0,
-        );
+        filteredRows = rows.filter(isAggregateDimension);
       } else if (
         params.partnerCode === undefined &&
         params.aggrLevel === undefined &&
@@ -603,7 +627,7 @@ export class ComtradeDataService {
             (typeof params.reporterCode === 'number' ? params.reporterCode : '');
           const pc = `${reporter}/${row.period ?? ''}/${row.partnerCode ?? 0}/${row.cmdCode ?? ''}`;
           const existing = bestByPartner.get(pc);
-          if (!existing || (row.primaryValue ?? 0) > (existing.primaryValue ?? 0)) {
+          if (!existing || preferPartnerRow(row, existing)) {
             bestByPartner.set(pc, row);
           }
         }
@@ -616,12 +640,16 @@ export class ComtradeDataService {
         row.reporterCode ??
         (typeof params.reporterCode === 'number' ? params.reporterCode : undefined);
       if (reporterCode === undefined) throw malformedResponse();
+      const keepQtyUnit = !missingUnit(row.qty, row.qtyUnitCode);
+      const keepAltQtyUnit = !missingUnit(row.altQty, row.altQtyUnitCode);
       const qtyUnitAbbr =
-        row.qtyUnitAbbr ||
-        (row.qtyUnitCode != null ? units?.get(row.qtyUnitCode)?.qtyAbbr : undefined);
+        keepQtyUnit &&
+        (row.qtyUnitAbbr ||
+          (row.qtyUnitCode != null ? units?.get(row.qtyUnitCode)?.qtyAbbr : undefined));
       const altQtyUnitAbbr =
-        row.altQtyUnitAbbr ||
-        (row.altQtyUnitCode != null ? units?.get(row.altQtyUnitCode)?.qtyAbbr : undefined);
+        keepAltQtyUnit &&
+        (row.altQtyUnitAbbr ||
+          (row.altQtyUnitCode != null ? units?.get(row.altQtyUnitCode)?.qtyAbbr : undefined));
       const aggrLevel = row.aggrLevel ?? row.aggrlevel;
       const reporterEntry =
         typeof row.reporterCode === 'number' ? ref.getCountryByCode(row.reporterCode) : undefined;
@@ -639,8 +667,8 @@ export class ComtradeDataService {
       // -1, and weights or CIF/FOB valuations beside a positive value. A zero in a real unit
       // stays a measurement.
       const reportsValue = (row.primaryValue ?? 0) > 0;
-      const qty = row.qty === 0 && row.qtyUnitCode === -1 ? undefined : row.qty;
-      const altQty = row.altQty === 0 && row.altQtyUnitCode === -1 ? undefined : row.altQty;
+      const qty = keepQtyUnit ? row.qty : undefined;
+      const altQty = keepAltQtyUnit ? row.altQty : undefined;
       const netWgt = row.netWgt === 0 && reportsValue ? undefined : row.netWgt;
       const grossWgt = row.grossWgt === 0 && reportsValue ? undefined : row.grossWgt;
       const fobvalue = row.fobvalue === 0 && reportsValue ? undefined : row.fobvalue;
@@ -666,10 +694,10 @@ export class ComtradeDataService {
         ...(row.isOriginalClassification != null && {
           isOriginalClassification: row.isOriginalClassification,
         }),
-        ...(row.qtyUnitCode != null && { qtyUnitCode: row.qtyUnitCode }),
+        ...(keepQtyUnit && row.qtyUnitCode != null && { qtyUnitCode: row.qtyUnitCode }),
         ...(qtyUnitAbbr && { qtyUnitAbbr }),
         ...(altQty != null && { altQty }),
-        ...(row.altQtyUnitCode != null && { altQtyUnitCode: row.altQtyUnitCode }),
+        ...(keepAltQtyUnit && row.altQtyUnitCode != null && { altQtyUnitCode: row.altQtyUnitCode }),
         ...(altQtyUnitAbbr && { altQtyUnitAbbr }),
         ...(row.isQtyEstimated != null && { isQtyEstimated: row.isQtyEstimated }),
         ...(row.isNetWgtEstimated != null && { isNetWgtEstimated: row.isNetWgtEstimated }),

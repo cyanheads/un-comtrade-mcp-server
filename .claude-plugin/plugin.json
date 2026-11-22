@@ -22,6 +22,12 @@
     "hs-codes"
   ],
   "userConfig": {
+    "COMTRADE_CLAMP_LIMITS": {
+      "type": "boolean",
+      "title": "Clamp trade page limits",
+      "description": "Serve up to 1,000 goods or services records when a larger page is requested. Disable to reject oversized page requests.",
+      "default": true
+    },
     "COMTRADE_SUBSCRIPTION_KEY": {
       "type": "string",
       "title": "UN Comtrade Subscription Key",
@@ -36,7 +42,8 @@
       "args": ["-y", "@cyanheads/un-comtrade-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
-        "COMTRADE_SUBSCRIPTION_KEY": "${user_config.COMTRADE_SUBSCRIPTION_KEY}"
+        "COMTRADE_SUBSCRIPTION_KEY": "${user_config.COMTRADE_SUBSCRIPTION_KEY}",
+        "COMTRADE_CLAMP_LIMITS": "${user_config.COMTRADE_CLAMP_LIMITS}"
       }
     }
   }

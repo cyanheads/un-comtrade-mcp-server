@@ -28,6 +28,15 @@ import {
   mixedPartnerBreakdownNotice,
 } from '@/mcp-server/tools/reporter-notice.js';
 import {
+  applyTradeLimit,
+  formatTradePage,
+  limitClampSchema,
+  renderLimitClamp,
+  tradePage,
+  tradePageInput,
+  tradePageOutput,
+} from '@/mcp-server/tools/trade-page.js';
+import {
   describePeriodFailures,
   getComtradeDataService,
 } from '@/services/comtrade-data/comtrade-data-service.js';
@@ -38,7 +47,10 @@ const TradeFlowRecordSchema = z.object({
     .string()
     .optional()
     .describe('Actual classification edition supplied by the row.'),
-  qtyUnitCode: z.number().optional().describe('Quantity unit code; -1 means unavailable.'),
+  qtyUnitCode: z
+    .number()
+    .optional()
+    .describe('Quantity unit code; omitted when -1 and quantity is absent.'),
   qtyUnitAbbr: z
     .string()
     .optional()
@@ -47,7 +59,10 @@ const TradeFlowRecordSchema = z.object({
     .number()
     .optional()
     .describe('Alternate quantity, in its own unit. Absent when not reported.'),
-  altQtyUnitCode: z.number().optional().describe('Alternate quantity unit code.'),
+  altQtyUnitCode: z
+    .number()
+    .optional()
+    .describe('Alternate unit code; omitted when -1 and alternate quantity is absent.'),
   altQtyUnitAbbr: z.string().optional().describe('Alternate quantity unit abbreviation.'),
   isQtyEstimated: z.boolean().optional().describe('Whether quantity is estimated.'),
   isNetWgtEstimated: z.boolean().optional().describe('Whether net weight is estimated.'),
@@ -84,7 +99,7 @@ const TradeFlowRecordSchema = z.object({
 export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
   title: 'Get Trade Flow Records',
   description:
-    'Fetch bilateral trade flow records — the primary data retrieval tool. Returns trade value in USD (primaryValue — FOB for exports, CIF for imports), quantity, net weight, and period/commodity/partner metadata for each row. Accepts multiple periods and commodity codes per call; pass partner_code 0 to get totals aggregated across all partners. Omit cmd_code or pass "TOTAL" to aggregate all commodities. Keyless preview makes one request per served period, at least 4 seconds apart, with a 500-record cap per request. Use comtrade_lookup_countries to resolve reporter/partner codes and comtrade_search_commodities to resolve HS codes. For SITC, supply codes from the selected SITC revision.',
+    'Fetch bilateral trade flow records — the primary data retrieval tool. Returns trade value in USD (primaryValue — FOB for exports, CIF for imports), quantity, net weight, and period/commodity/partner metadata for each row. Accepts multiple periods and commodity codes per call; pass partner_code 0 to get totals aggregated across all partners. Omit cmd_code or pass "TOTAL" to aggregate all commodities. Follow nextOffset for remaining records; each page repeats the upstream period requests. Keyless preview makes one request per served period, at least 4 seconds apart, with a 500-record cap per request. Use comtrade_lookup_countries to resolve reporter/partner codes and comtrade_search_commodities to resolve HS codes. For SITC, supply codes from the selected SITC revision.',
   annotations: { readOnlyHint: true, openWorldHint: true },
   errors: [
     {
@@ -146,6 +161,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
 
   input: z
     .object({
+      ...tradePageInput,
       reporter_code: z
         .union([
           m49Schema.describe('One M49 reporter code.'),
@@ -211,7 +227,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       .describe(
         'Sum of upstream response counts before local filtering; not a full match count when capped.',
       ),
-    shown: z.number().describe('Number of records returned in this response.'),
+    ...tradePageOutput,
     truncated: z
       .boolean()
       .describe('True when any preview response reached 500 and may be incomplete.'),
@@ -222,6 +238,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
   }),
 
   enrichment: {
+    limitClamp: limitClampSchema,
     unservedReporters: z
       .array(z.number())
       .optional()
@@ -279,6 +296,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
   },
 
   enrichmentTrailer: {
+    limitClamp: { render: renderLimitClamp },
     unservedReporters: {
       render: (reporters) =>
         reporters
@@ -307,6 +325,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
     cmdCodesWithoutRecords: { render: renderCmdCodesWithoutRecords },
   },
   async handler(input, ctx) {
+    const limit = applyTradeLimit(input.limit, ctx, 'comtrade_get_trade_flows');
     ctx.log.info('comtrade_get_trade_flows', {
       reporter: input.reporter_code,
       flow: input.flow_code,
@@ -341,6 +360,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       },
       ctx.signal,
     );
+    ctx.signal.throwIfAborted();
     if (result.referenceNotice) ctx.enrich({ referenceNotice: result.referenceNotice });
     const failed = new Set(result.failedPeriods?.map((failure) => failure.period));
     const unservedPeriods = [
@@ -385,52 +405,17 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
         `No trade flow records found for ${subject}, flow=${input.flow_code}, periods=[${served}]. ${next}`,
       );
     }
+    const page = tradePage(result.records, input.offset, limit, notices);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     return {
-      records: result.records,
+      ...page,
       totalCount: result.totalCount,
-      shown: result.records.length,
       truncated: result.truncated,
       ...(result.truncationHint && { truncationHint: result.truncationHint }),
     };
   },
 
-  format: (result) => {
-    const lines = [`## Trade Flow Records`, `**Records:** ${result.shown} of ${result.totalCount}`];
-    if (result.truncated && result.truncationHint) {
-      lines.push(`\n> **Truncated:** ${result.truncationHint}`);
-    }
-    for (const r of result.records) {
-      lines.push(
-        `\n**${r.reporterDesc}** (${r.reporterCode}) → **${r.partnerDesc}** (${r.partnerCode}) | ${r.period} | ${r.flowCode}`,
-      );
-      lines.push(
-        `Commodity: ${r.cmdCode} — ${r.cmdDesc}` +
-          (r.aggrLevel != null ? ` (aggregation level ${r.aggrLevel})` : ''),
-      );
-      if (r.classificationCode !== undefined)
-        lines.push(`classificationCode: ${r.classificationCode}`);
-      if (r.qtyUnitCode !== undefined) lines.push(`qtyUnitCode: ${r.qtyUnitCode}`);
-      if (r.qtyUnitAbbr !== undefined) lines.push(`qtyUnitAbbr: ${r.qtyUnitAbbr}`);
-      if (r.altQty !== undefined) lines.push(`altQty: ${r.altQty}`);
-      if (r.altQtyUnitCode !== undefined) lines.push(`altQtyUnitCode: ${r.altQtyUnitCode}`);
-      if (r.altQtyUnitAbbr !== undefined) lines.push(`altQtyUnitAbbr: ${r.altQtyUnitAbbr}`);
-      if (r.isQtyEstimated !== undefined) lines.push(`isQtyEstimated: ${r.isQtyEstimated}`);
-      if (r.isNetWgtEstimated !== undefined)
-        lines.push(`isNetWgtEstimated: ${r.isNetWgtEstimated}`);
-      if (r.primaryValue != null) {
-        lines.push(`Primary Value: $${r.primaryValue.toLocaleString()} USD`);
-      }
-      if (r.fobvalue != null) lines.push(`FOB: $${r.fobvalue.toLocaleString()} USD`);
-      if (r.cifvalue != null) lines.push(`CIF: $${r.cifvalue.toLocaleString()} USD`);
-      if (r.qty != null) lines.push(`Quantity: ${r.qty.toLocaleString()}`);
-      if (r.netWgt != null) lines.push(`Net Weight: ${r.netWgt.toLocaleString()} kg`);
-      if (r.grossWgt != null) lines.push(`Gross Weight: ${r.grossWgt.toLocaleString()} kg`);
-      if (r.isReported != null) {
-        lines.push(`Reported: ${r.isReported ? 'Yes (direct)' : 'No (estimated/aggregated)'}`);
-      }
-    }
-    return [{ type: 'text', text: lines.join('\n') }];
-  },
+  format: (result) =>
+    formatTradePage('Trade Flow Records', result, Object.keys(TradeFlowRecordSchema.shape)),
 });
