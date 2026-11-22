@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-11-21
+
+Rank services trading partners and page through goods and services breakdowns.
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-11-13
 
 Rank goods reporters, drill into HS categories, and identify the editions behind historical commodity codes.

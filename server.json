@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/un-comtrade-mcp-server",
     "source": "github"
   },
-  "version": "0.4.0",
+  "version": "0.5.0",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/un-comtrade-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "environmentVariables": [
         {
           "name": "COMTRADE_CLAMP_LIMITS",
@@ -50,7 +50,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/un-comtrade-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "environmentVariables": [
         {
           "name": "COMTRADE_CLAMP_LIMITS",
