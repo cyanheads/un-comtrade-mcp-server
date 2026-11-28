@@ -17,8 +17,6 @@ export default mergeConfig(
   defineConfig({
     resolve: { alias },
     test: {
-      // Bun's child-process IPC channel lacks the unref() Vitest uses for fork workers.
-      ...(process.versions.bun && { pool: 'threads' as const }),
       projects: [
         {
           extends: true,
