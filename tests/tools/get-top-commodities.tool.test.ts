@@ -324,15 +324,13 @@ describe('getTopCommoditiesTool', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it.each(['absent parent', 'unresolved edition', 'unavailable catalog'] as const)(
+  it.each(['absent parent', 'unresolved edition'] as const)(
     'returns scoped empty coverage for %s without falling back to AG',
     async (failure) => {
-      const catalog = useHierarchy([
+      useHierarchy([
         ['84', 2],
         ['8471', 4, '84'],
       ]);
-      if (failure === 'unavailable catalog')
-        catalog.mockRejectedValueOnce(new Error('Unavailable'));
       fetchMock.mockResolvedValueOnce({
         records: rowsOf([['TOTAL', 500, 'Total']], 2).map((row) => ({
           ...row,
@@ -349,7 +347,6 @@ describe('getTopCommoditiesTool', () => {
       const notice = {
         'absent parent': 'Parent code 85 is absent at the required level in the H6 catalog',
         'unresolved edition': 'Matching TOTAL did not identify one complete HS edition',
-        'unavailable catalog': 'TOTAL or the matching HS reference is unavailable',
       }[failure];
       expect(result.structuredContent).toMatchObject({
         parentCode: '85',
@@ -362,6 +359,109 @@ describe('getTopCommoditiesTool', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     },
   );
+
+  it.each([
+    {
+      name: 'invalid_upstream_response',
+      error: new McpError(JsonRpcErrorCode.ServiceUnavailable, 'Malformed UN Comtrade payload.', {
+        reason: 'invalid_upstream_response',
+        retryable: false,
+      }),
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      hint: undefined,
+    },
+    {
+      name: 'rate_limited',
+      error: new McpError(JsonRpcErrorCode.RateLimited, 'Rate limited.', {
+        reason: 'rate_limited',
+        retryAfter: 45,
+        retryable: true,
+      }),
+      code: JsonRpcErrorCode.RateLimited,
+      hint: 'Wait 45 seconds, then retry.',
+    },
+    {
+      name: 'upstream_unavailable',
+      error: new McpError(JsonRpcErrorCode.ServiceUnavailable, 'Upstream unavailable.', {
+        reason: 'upstream_unavailable',
+        retryable: true,
+      }),
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      hint: undefined,
+    },
+  ])(
+    'propagates scoped initial trade lookup failure ($name) without returning an empty ranking',
+    async ({ error, name, code, hint }) => {
+      fetchMock.mockRejectedValueOnce(error);
+      const result = await runToolContract(getTopCommoditiesTool, {
+        ...args,
+        parent_code: '0901',
+        aggr_level: 6,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code,
+          data: {
+            reason: name,
+            ...(hint ? { recovery: { hint } } : {}),
+          },
+        },
+      });
+    },
+  );
+
+  it('propagates scoped catalog failures naming the HS reference and advising retry', async () => {
+    const catalog = useHierarchy([['84', 2]]);
+    catalog.mockRejectedValueOnce(new Error('Malformed H6 catalog JSON'));
+    fetchMock.mockResolvedValueOnce({
+      records: rowsOf([['TOTAL', 500, 'Total']], 2).map((row) => ({
+        ...row,
+        classificationCode: 'H6',
+      })),
+      totalCount: 1,
+      truncated: false,
+    });
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      parent_code: '0901',
+      aggr_level: 6,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        data: {
+          reason: 'hs_reference_unavailable',
+          recovery: { hint: expect.stringContaining('H6') },
+        },
+      },
+    });
+    expect(textOf(result)).toContain('H6');
+    expect(textOf(result)).toMatch(/retry/i);
+  });
+
+  it('preserves RequestCancelled when catalog fetch is cancelled during a drill-down', async () => {
+    const catalog = useHierarchy([['84', 2]]);
+    catalog.mockRejectedValueOnce(new McpError(JsonRpcErrorCode.RequestCancelled, 'Cancelled'));
+    fetchMock.mockResolvedValueOnce({
+      records: rowsOf([['TOTAL', 500, 'Total']], 2).map((row) => ({
+        ...row,
+        classificationCode: 'H6',
+      })),
+      totalCount: 1,
+      truncated: false,
+    });
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      parent_code: '0901',
+      aggr_level: 6,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: JsonRpcErrorCode.RequestCancelled },
+    });
+  });
 
   it('subdivides capped descendant queries recursively and only marks unresolved codes missing', async () => {
     useHierarchy([

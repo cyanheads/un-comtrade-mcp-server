@@ -90,16 +90,19 @@ export async function retrieveCommodityRanking(
       }
     }
   };
-  const recover = (error: unknown) => {
+  const isCancellation = (error: unknown) => {
     callerSignal.throwIfAborted();
+    if (error instanceof McpError && error.code === JsonRpcErrorCode.RequestCancelled) return true;
+    return error instanceof Error && error.name === 'AbortError' && !signal.aborted;
+  };
+  const recover = (error: unknown) => {
+    if (isCancellation(error)) throw error;
     if (
       error instanceof McpError &&
       (error.code === JsonRpcErrorCode.ValidationError ||
-        error.code === JsonRpcErrorCode.InvalidParams ||
-        error.code === JsonRpcErrorCode.RequestCancelled)
+        error.code === JsonRpcErrorCode.InvalidParams)
     )
       throw error;
-    if (error instanceof Error && error.name === 'AbortError' && !signal.aborted) throw error;
   };
   let codes: string[] | undefined;
   try {
@@ -136,7 +139,23 @@ export async function retrieveCommodityRanking(
       } else {
         classificationCode = edition;
         if (!parentCode) denominatorValueUsd = matching[0]?.primaryValue;
-        const catalog = await reference.getCommodityCodes(edition, signal);
+        let catalog: Map<string, CommodityCode>;
+        try {
+          catalog = await reference.getCommodityCodes(edition, signal);
+        } catch (error) {
+          if (!parentCode) throw error;
+          if (isCancellation(error)) throw error;
+          throw new McpError(
+            JsonRpcErrorCode.ServiceUnavailable,
+            `Failed to load HS reference ${edition}.`,
+            {
+              reason: 'hs_reference_unavailable',
+              retryable: true,
+              recovery: { hint: `Retry later when the ${edition} HS reference is available.` },
+            },
+            { cause: error },
+          );
+        }
         if (parentCode && catalog.size > 0) {
           if (catalog.get(parentCode)?.aggrLevel !== parentCode.length) {
             return {
@@ -171,6 +190,7 @@ export async function retrieveCommodityRanking(
         }
       }
     } catch (error) {
+      if (parentCode) throw error;
       recover(error);
       coverageNotice =
         'TOTAL or the matching HS reference is unavailable; available categories have no ranks or shares.';
