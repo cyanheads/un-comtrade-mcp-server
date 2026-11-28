@@ -23,7 +23,7 @@
       "environmentVariables": [
         {
           "name": "COMTRADE_CLAMP_LIMITS",
-          "description": "Serve up to 1,000 goods or services records when a larger page is requested. Set false to reject oversized page requests.",
+          "description": "Clamp oversized trade pages to 1,000 records and accept batch arrays of up to 1,000 entries. Set false to reject oversized pages and limit batch arrays to 120 periods or 200 codes or reporters.",
           "format": "boolean",
           "default": "true"
         },
@@ -54,7 +54,7 @@
       "environmentVariables": [
         {
           "name": "COMTRADE_CLAMP_LIMITS",
-          "description": "Serve up to 1,000 goods or services records when a larger page is requested. Set false to reject oversized page requests.",
+          "description": "Clamp oversized trade pages to 1,000 records and accept batch arrays of up to 1,000 entries. Set false to reject oversized pages and limit batch arrays to 120 periods or 200 codes or reporters.",
           "format": "boolean",
           "default": "true"
         },

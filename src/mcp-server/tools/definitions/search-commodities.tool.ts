@@ -1,14 +1,14 @@
 /**
- * @fileoverview Tool for searching edition-specific HS and SITC commodity catalogs.
+ * @fileoverview Tool for searching edition-specific HS, SITC and BEC commodity catalogs.
  * @module mcp-server/tools/definitions/search-commodities.tool
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
-import { goodsClassificationSchema } from '@/mcp-server/tools/comtrade-input.js';
+import { tradeClassificationSchema } from '@/mcp-server/tools/comtrade-input.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
-import { HS_EDITIONS } from '@/services/comtrade-reference/types.js';
+import { BEC_LEVELS, HS_EDITIONS } from '@/services/comtrade-reference/types.js';
 
 /** Rejection for a query that is blank after trimming or holds no letter or digit ("-", "."). */
 const QUERY_MESSAGE =
@@ -17,7 +17,7 @@ const QUERY_MESSAGE =
 export const searchCommoditiesTool = tool('comtrade_search_commodities', {
   title: 'Search Commodity Codes',
   description:
-    'Find HS or SITC commodity codes by keyword, description, or code prefix. A code written with dots, spaces, or hyphens ("0901.11") matches 090111. Exact codes, code prefixes and contiguous description matches rank first, followed by descriptions containing every query term in any order. Default HS searches include historical codes and report which edition catalogs list each code. Use a trade row’s classificationCode or comtrade_get_data_availability to identify the edition, then search that edition for its descriptions. Keyless goods queries use HS for as-reported data. Continue with nextOffset using the same query, classification, and aggr_level.',
+    'Find HS, SITC or BEC commodity codes by keyword, description, or code prefix. A code written with dots, spaces, or hyphens ("0901.11") matches 090111. Exact codes, code prefixes and contiguous description matches rank first, followed by descriptions containing every query term in any order. Default HS searches include historical codes and report which edition catalogs list each code. Use a trade row’s classificationCode or comtrade_get_data_availability to identify the edition, then search that edition for its descriptions. Keyless goods queries use HS for as-reported data. Continue with nextOffset using the same query, classification, and aggr_level.',
   annotations: { readOnlyHint: true, openWorldHint: false },
 
   input: z.object({
@@ -29,16 +29,16 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       .describe(
         'Keyword, partial description, or commodity code prefix. Dots, spaces, and hyphens in a code are ignored, so "0901.11" finds 090111. Examples: "motor vehicles", "8471", "coffee", "84" (HS chapter 84 = machinery).',
       ),
-    classification: goodsClassificationSchema
+    classification: tradeClassificationSchema
       .default('HS')
       .describe(
-        'Goods reference catalog, case-insensitive: HS uses the default HS.json discovery catalog, whose total identifies H6; it is not an authoritative historical-edition reference. Select H0–H6 for an explicit HS edition, or SS/S1–S4 for SITC.',
+        'Goods reference catalog, case-insensitive: HS uses the default HS.json discovery catalog, whose total identifies H6; it is not an authoritative historical-edition reference. Select H0–H6 for an explicit HS edition, SS/S1–S4 for SITC, or B4/B5 for the BEC revisions.',
       ),
     aggr_level: z
       .union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)])
       .optional()
       .describe(
-        'Native aggregation level: HS uses 2 (chapter), 4 (heading), 6 (subheading); SITC uses 1–5. Omit to return all matching levels.',
+        'HS uses level 2 (chapter), 4 (heading), and 6 (subheading). SITC uses levels 1–5. BEC B4 uses 1–3 and B5 uses 1–4 or 6. Omit to return all matching levels.',
       ),
     limit: z
       .number()
@@ -67,7 +67,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
             aggrLevel: z
               .number()
               .describe(
-                'Native aggregation level in the selected HS or SITC catalog; 0 is the all-commodities TOTAL, which no aggr_level filter returns.',
+                'Native aggregation level in the selected catalog; 0 is the all-commodities TOTAL, which no aggr_level filter returns.',
               ),
             parent: z
               .string()
@@ -87,7 +87,7 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
               ),
             isLeaf: z
               .boolean()
-              .describe('Whether this code has no sub-codes (leaf node in the HS hierarchy).'),
+              .describe('Whether this code has no sub-codes in the selected catalog.'),
             recommendedQueryCode: z
               .string()
               .describe(
@@ -134,7 +134,8 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       reason: 'invalid_aggregation_level',
       code: JsonRpcErrorCode.ValidationError,
       when: 'The requested level does not belong to the selected classification family.',
-      recovery: 'Use HS levels 2, 4, or 6, or SITC levels 1 through 5.',
+      recovery:
+        'Use HS levels 2, 4, or 6, SITC levels 1 through 5, or BEC levels 1–3 for B4 and 1–4 or 6 for B5.',
     },
   ],
 
@@ -148,11 +149,14 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
     });
     const ref = getComtradeReferenceService();
 
-    const sitc = input.classification.startsWith('S');
-    if (
-      input.aggr_level !== undefined &&
-      (sitc ? input.aggr_level > 5 : ![2, 4, 6].includes(input.aggr_level))
-    ) {
+    const { classification, aggr_level: level } = input;
+    const levels: readonly number[] =
+      classification === 'B4' || classification === 'B5'
+        ? BEC_LEVELS[classification]
+        : classification.startsWith('S')
+          ? [1, 2, 3, 4, 5]
+          : [2, 4, 6];
+    if (level !== undefined && !levels.includes(level)) {
       throw ctx.fail(
         'invalid_aggregation_level',
         `Aggregation level ${input.aggr_level} is invalid for ${input.classification}.`,
@@ -221,15 +225,18 @@ export const searchCommoditiesTool = tool('comtrade_search_commodities', {
       `**Offset:** ${result.offset}${result.nextOffset === undefined ? '' : ` | **Next offset:** ${result.nextOffset}`}`,
     ];
     for (const m of result.matches) {
-      const levelLabel = result.classification.startsWith('S')
-        ? 'SITC'
-        : m.aggrLevel === 2
-          ? 'Chapter'
-          : m.aggrLevel === 4
-            ? 'Heading'
-            : m.aggrLevel === 6
-              ? 'Subheading'
-              : 'Total';
+      const levelLabel =
+        result.classification === 'B4' || result.classification === 'B5'
+          ? 'BEC'
+          : result.classification.startsWith('S')
+            ? 'SITC'
+            : m.aggrLevel === 2
+              ? 'Chapter'
+              : m.aggrLevel === 4
+                ? 'Heading'
+                : m.aggrLevel === 6
+                  ? 'Subheading'
+                  : 'Total';
       lines.push(`\n**${m.id}** — ${m.description}`);
       lines.push(
         `  aggrLevel: ${m.aggrLevel} (${levelLabel})${m.parent ? ` | Parent: ${m.parent}` : ''}`,

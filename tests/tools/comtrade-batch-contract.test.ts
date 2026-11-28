@@ -4,6 +4,7 @@
  */
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import * as serverConfig from '@/config/server-config.js';
 import { getDataAvailabilityTool } from '@/mcp-server/tools/definitions/get-data-availability.tool.js';
 import { getServicesTradeTool } from '@/mcp-server/tools/definitions/get-services-trade.tool.js';
 import { getTopCommoditiesTool } from '@/mcp-server/tools/definitions/get-top-commodities.tool.js';
@@ -42,7 +43,13 @@ const record = {
 };
 const periods = Array.from({ length: 13 }, (_, i) => String(2000 + i));
 const codes = Array.from({ length: 21 }, (_, i) => String(i).padStart(2, '0'));
+const { countExpansion } = vi.hoisted(() => ({ countExpansion: vi.fn() }));
+vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>()),
+  createCounter: () => ({ add: countExpansion }),
+}));
 beforeEach(() => {
+  countExpansion.mockClear();
   initComtradeDataService(config, storage);
   initComtradeMetaService(config, storage);
   initComtradeReferenceService(config, storage);
@@ -174,8 +181,8 @@ it.each(['S1', 'S2', 'S3', 'S4', 'SS'])(
     );
     expect(spy.mock.calls[0]![2]).toBe(spy.mock.calls[1]![2]);
     expect(result.isError).not.toBe(true);
-    expect(JSON.stringify(result.structuredContent)).toContain('may be incomplete');
-    expect(JSON.stringify(result.content)).toContain('may be incomplete');
+    expect(JSON.stringify(result.structuredContent)).toContain('may be partial');
+    expect(JSON.stringify(result.content)).toContain('may be partial');
     expect(JSON.stringify(result.structuredContent)).toContain(
       'Reference descriptions unavailable',
     );
@@ -264,6 +271,51 @@ it('bounded arrays serve their caps and name unserved inputs on both surfaces', 
   expect(spy.mock.calls.map(([params]) => params.period.split(',').length)).toEqual([8, 4, 4, 8]);
   for (const [params] of spy.mock.calls)
     if (params.cmdCode) expect(params.cmdCode.split(',')).toHaveLength(20);
+});
+
+it('records an expanded read once and discloses the distinct unserved suffixes', async () => {
+  const spy = vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData').mockResolvedValue({
+    records: [record],
+    totalCount: 1,
+    truncated: false,
+  });
+  const reporters = Array.from({ length: 21 }, (_, index) => 842 + index);
+  const args = {
+    reporter_code: [...Array<number>(180).fill(842), ...reporters],
+    period: [...Array<string>(108).fill('2000'), ...periods],
+    cmd_code: [...Array<string>(180).fill('00'), ...codes],
+    flow_code: 'X',
+  };
+  const result = await runToolContract(getTradeFlowsTool, args);
+  expect(spy).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      reporterCode: reporters.slice(0, 20),
+      period: periods.slice(0, 8).join(','),
+      cmdCode: codes.slice(0, 20).join(','),
+    }),
+    expect.anything(),
+  );
+  expect(result.structuredContent).toMatchObject({
+    unservedPeriods: periods.slice(8),
+    unservedCmdCodes: ['20'],
+    unservedReporters: [862],
+  });
+  const content = JSON.stringify(result.content);
+  expect(content).toContain(periods.slice(8).join(', '));
+  expect(content).toContain('Unserved commodity codes:** 20');
+  expect(content).toContain('Unserved reporters:** 862');
+  expect(countExpansion).toHaveBeenCalledExactlyOnceWith(1, {
+    'mcp.tool.name': 'comtrade_get_trade_flows',
+  });
+
+  vi.spyOn(serverConfig, 'clampTradeLimits').mockReturnValue(false);
+  const strict = await runToolContract(getTradeFlowsTool, args);
+  expect(strict.structuredContent).toMatchObject({
+    error: { data: { reason: 'invalid_arguments' } },
+  });
+  expect(JSON.stringify(strict.content)).toContain('expected array to have <=120 items');
+  expect(spy).toHaveBeenCalledTimes(1);
+  expect(countExpansion).toHaveBeenCalledTimes(1);
 });
 it.each([
   { selectors: ['11'], records: [], truncated: false, missing: ['11'] },
@@ -438,8 +490,8 @@ it('authenticated access serves 12 periods for every period-batching tool', asyn
 });
 it.each([
   ['C', undefined, 'HS'],
-  ['S', undefined, 'EB10'],
-  ['S', '', 'EB10'],
+  ['S', undefined, 'EB'],
+  ['S', '', 'EB'],
   ['S', 'EB02', 'EB02'],
 ] as const)('availability forwards %s/%s as %s', async (type_code, classification, expected) => {
   const spy = vi.spyOn(ComtradeMetaService.prototype, 'getDataAvailability').mockResolvedValue([
@@ -532,7 +584,7 @@ it('catalog searches serve oversized limits as exact pages that continue by next
 });
 it('rejects atomic-invalid empty periods and absurd arrays before work', async () => {
   const spy = vi.spyOn(ComtradeDataService.prototype, 'fetchTradeData');
-  for (const period of [[], Array(121).fill('2022')]) {
+  for (const period of [[], Array(1_001).fill('2022')]) {
     const result = await runToolContract(getTradeFlowsTool, {
       reporter_code: 842,
       flow_code: 'X',

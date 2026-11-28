@@ -112,6 +112,11 @@ function rowsOf(rows: [string, number | null, string][], aggrLevel: 2 | 4) {
 const RESIDUAL_DESC = 'Commodities not specified according to kind';
 
 describe('getTopCommoditiesTool', () => {
+  it('describes the import valuation fallback for ranked commodities', () => {
+    expect(
+      getTopCommoditiesTool.output.shape.commodities.element.shape.primaryValueUsd.description,
+    ).toContain('CIF when available, otherwise FOB');
+  });
   let fetchMock: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -324,15 +329,13 @@ describe('getTopCommoditiesTool', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it.each(['absent parent', 'unresolved edition', 'unavailable catalog'] as const)(
+  it.each(['absent parent', 'unresolved edition'] as const)(
     'returns scoped empty coverage for %s without falling back to AG',
     async (failure) => {
-      const catalog = useHierarchy([
+      useHierarchy([
         ['84', 2],
         ['8471', 4, '84'],
       ]);
-      if (failure === 'unavailable catalog')
-        catalog.mockRejectedValueOnce(new Error('Unavailable'));
       fetchMock.mockResolvedValueOnce({
         records: rowsOf([['TOTAL', 500, 'Total']], 2).map((row) => ({
           ...row,
@@ -349,7 +352,6 @@ describe('getTopCommoditiesTool', () => {
       const notice = {
         'absent parent': 'Parent code 85 is absent at the required level in the H6 catalog',
         'unresolved edition': 'Matching TOTAL did not identify one complete HS edition',
-        'unavailable catalog': 'TOTAL or the matching HS reference is unavailable',
       }[failure];
       expect(result.structuredContent).toMatchObject({
         parentCode: '85',
@@ -362,6 +364,80 @@ describe('getTopCommoditiesTool', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     },
   );
+
+  it.each([
+    [200, JsonRpcErrorCode.ServiceUnavailable, 'invalid_upstream_response', 'Retry the request'],
+    [429, JsonRpcErrorCode.RateLimited, 'rate_limited', 'Wait 6 seconds, then retry.'],
+    [
+      503,
+      JsonRpcErrorCode.ServiceUnavailable,
+      'upstream_unavailable',
+      'Wait a minute and retry the same call.',
+    ],
+  ] as const)(
+    'returns scoped trade HTTP %i failure with its recovery on both surfaces',
+    async (status, code, reason, hint) => {
+      vi.useFakeTimers();
+      fetchMock.mockRestore();
+      const http = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async () =>
+          Response.json(
+            { unexpected: 'missing data' },
+            { status, headers: { 'Retry-After': '6' } },
+          ),
+        );
+      const pending = runToolContract(getTopCommoditiesTool, {
+        ...args,
+        parent_code: '85',
+        aggr_level: 4,
+      });
+      await vi.runAllTimersAsync();
+      const result = await pending;
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { code, data: { reason, recovery: { hint: expect.stringContaining(hint) } } },
+      });
+      expect(textOf(result)).toContain(hint);
+      expect(textOf(result)).not.toContain('fewer periods');
+      expect(textOf(result)).not.toContain('No commodity data found');
+      if (status === 200) expect(http).toHaveBeenCalledOnce();
+      else expect(http.mock.calls.length).toBeGreaterThan(1);
+      for (const [url] of http.mock.calls) {
+        expect(new URL(String(url)).searchParams.get('cmdCode')).toBe('TOTAL,85');
+      }
+    },
+  );
+
+  it('identifies a malformed scoped HS catalog separately from missing trade data', async () => {
+    vi.mocked(ComtradeReferenceService.prototype.getCommodityCodes).mockRestore();
+    const http = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('<invalid json>'));
+    fetchMock.mockResolvedValueOnce({
+      records: [{ ...COMMODITY_RECORDS[2], classificationCode: 'H6' }],
+      totalCount: 1,
+      truncated: false,
+    });
+    const result = await runToolContract(getTopCommoditiesTool, {
+      ...args,
+      parent_code: '85',
+      aggr_level: 4,
+    });
+    const hint = 'Retry the ranking when the HS reference catalog is available.';
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        message: expect.stringContaining('H6'),
+        data: { reason: 'hs_reference_unavailable', classificationCode: 'H6', recovery: { hint } },
+      },
+    });
+    expect(textOf(result)).toContain('H6');
+    expect(textOf(result)).toContain(hint);
+    expect(http).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
 
   it('subdivides capped descendant queries recursively and only marks unresolved codes missing', async () => {
     useHierarchy([

@@ -14,6 +14,7 @@ import {
   servicesClassificationSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
 import { servicesEmptyNotice } from '@/mcp-server/tools/services-empty-notice.js';
+import { sumUsd, tradeNumberFormat } from '@/mcp-server/tools/trade-values.js';
 import {
   getComtradeDataService,
   TRADE_DATA_DEADLINE_MS,
@@ -223,7 +224,7 @@ export const getTopServicesPartnersTool = tool('comtrade_get_top_services_partne
     const totalPartners = sorted.length;
     const totalValueUsd =
       totalPartners > 0 && !unresolvedValues
-        ? sorted.reduce((sum, row) => sum + (row.primaryValueUsd ?? 0), 0)
+        ? sumUsd(sorted.map((row) => row.primaryValueUsd))
         : undefined;
     const truncated = result.truncated || Boolean(result.failedPeriods?.length);
     const unresolvedSeries = rows.length > 0 && (!singleScheme || conflictingProvenance);
@@ -296,10 +297,13 @@ export const getTopServicesPartnersTool = tool('comtrade_get_top_services_partne
         `**Original classification:** ${result.isOriginalClassification ? 'Yes (as reported)' : 'No (converted by UN Comtrade)'}`,
       );
     if (result.totalValueUsd !== undefined)
-      lines.push(`**Total value of retrieved partners:** ${result.totalValueUsd} USD`);
+      lines.push(
+        `**Total value of retrieved partners:** ${tradeNumberFormat.format(result.totalValueUsd)} USD`,
+      );
     for (const row of result.partners) {
       lines.push(`\n**${escapeMarkdownInline(row.partnerDesc)}** (code ${row.partnerCode})`);
-      if (row.primaryValueUsd !== undefined) lines.push(`- Value: ${row.primaryValueUsd} USD`);
+      if (row.primaryValueUsd !== undefined)
+        lines.push(`- Value: ${tradeNumberFormat.format(row.primaryValueUsd)} USD`);
       if (row.rank !== undefined) lines.push(`- Rank: ${row.rank}`);
       if (row.sharePercent !== undefined) lines.push(`- Share: ${row.sharePercent}%`);
     }

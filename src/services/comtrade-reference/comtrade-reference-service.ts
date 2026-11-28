@@ -2,7 +2,7 @@
  * @fileoverview Comtrade reference data service. Fetches and indexes reporter/partner
  * country lists, HS commodity codes, and EBOPS service categories from UN Comtrade
  * static reference files at startup, and loads edition, unit, and EB scheme catalogs on
- * demand. Catalogs are validated row by row. All data is held in memory for fast lookups.
+ * demand, including the individual BEC revisions. Catalogs are validated row by row. All data is held in memory for fast lookups.
  * @module services/comtrade-reference/comtrade-reference-service
  */
 
@@ -457,6 +457,11 @@ export class ComtradeReferenceService {
       ? Array.from((await this.getSitcCodes(selected, signal)).values())
       : await this.fetchJson(`${selected}.json`, rawHsSchema, signal, 10_000);
     signal?.throwIfAborted();
+    if ((selected === 'B4' || selected === 'B5') && raw.length === 0) {
+      throw serializationError('Comtrade returned an empty reference catalog. Retry later.', {
+        filename: `${selected}.json`,
+      });
+    }
     const index = new Map(
       raw.map((entry) => [
         entry.id,

@@ -13,6 +13,8 @@ export interface DataAvailabilityRecord {
   firstReleased?: string;
   /** Frequency code: A=annual, M=monthly. */
   freqCode: string;
+  /** Whether UN Comtrade lists the dataset in the classification originally reported. */
+  isOriginalClassification?: boolean;
   /** Latest release or revision timestamp, as supplied by UN Comtrade. */
   lastReleased?: string;
   /** Period (YYYY or YYYYMM). */
@@ -34,6 +36,7 @@ export const rawAvailabilitySchema = z.object({
       classificationCode: z.string().nullish(),
       firstReleased: z.string().nullish(),
       freqCode: z.string().nullish(),
+      isOriginalClassification: z.boolean().nullish(),
       lastReleased: z.string().nullish(),
       period: z.union([z.string(), z.number()]).nullish(),
       reporterCode: z.number().nullish(),

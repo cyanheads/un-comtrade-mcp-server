@@ -15,18 +15,22 @@ import {
   codeSchema,
   frequencySchema,
   GOODS_CODE_SHAPE_MESSAGE,
-  goodsClassificationSchema,
   goodsCodesMatchClassification,
   goodsFlowSchema,
   m49Schema,
   periodSchema,
   periodsMatchFrequency,
   resolveFrequency,
+  tradeClassificationSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
 import {
   counterpartNotices,
   mixedPartnerBreakdownNotice,
 } from '@/mcp-server/tools/reporter-notice.js';
+import {
+  observeExpandedTradeBatch,
+  tradeBatchArray,
+} from '@/mcp-server/tools/trade-batch-input.js';
 import {
   applyTradeLimit,
   formatTradePage,
@@ -47,6 +51,10 @@ const TradeFlowRecordSchema = z.object({
     .string()
     .optional()
     .describe('Actual classification edition supplied by the row.'),
+  isOriginalClassification: z
+    .boolean()
+    .optional()
+    .describe('True for the original reporting classification, false for a converted row.'),
   qtyUnitCode: z
     .number()
     .optional()
@@ -71,13 +79,15 @@ const TradeFlowRecordSchema = z.object({
   partnerCode: z.number().describe('M49 partner code.'),
   partnerDesc: z.string().describe('Partner country/area name.'),
   flowCode: z.string().describe('Trade flow: M=import, X=export, RX=re-export, RM=re-import.'),
-  cmdCode: z.string().describe('HS or SITC commodity code or "TOTAL".'),
+  cmdCode: z.string().describe('HS, SITC or BEC commodity code or "TOTAL".'),
   cmdDesc: z.string().describe('Commodity description.'),
   period: z.string().describe('Period (YYYY for annual, YYYYMM for monthly).'),
   primaryValue: z
     .number()
     .optional()
-    .describe('Primary trade value in USD (FOB for exports, CIF for imports).'),
+    .describe(
+      'Primary trade value in USD. Exports use FOB. Imports use CIF when available, otherwise FOB.',
+    ),
   fobvalue: z.number().optional().describe('Free-on-board value in USD. Absent when not reported.'),
   cifvalue: z
     .number()
@@ -99,7 +109,7 @@ const TradeFlowRecordSchema = z.object({
 export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
   title: 'Get Trade Flow Records',
   description:
-    'Fetch bilateral trade flow records — the primary data retrieval tool. Returns trade value in USD (primaryValue — FOB for exports, CIF for imports), quantity, net weight, and period/commodity/partner metadata for each row. Accepts multiple periods and commodity codes per call; pass partner_code 0 to get totals aggregated across all partners. Omit cmd_code or pass "TOTAL" to aggregate all commodities. Follow nextOffset for remaining records; each page repeats the upstream period requests. Keyless preview makes one request per served period, at least 4 seconds apart, with a 500-record cap per request. Use comtrade_lookup_countries to resolve reporter/partner codes and comtrade_search_commodities to resolve HS codes. For SITC, supply codes from the selected SITC revision.',
+    'Fetch bilateral trade flow records with trade value in USD, quantity, net weight, and period/commodity/partner metadata. UN Comtrade uses FOB for export primaryValue and CIF when available, otherwise FOB, for import primaryValue. Check cifvalue and fobvalue when comparing mirror flows. Accepts multiple periods and commodity codes per call; pass partner_code 0 to get totals aggregated across all partners. Omit cmd_code or pass "TOTAL" to aggregate all commodities. Follow nextOffset for remaining records; each page repeats the upstream period requests. Keyless preview makes one request per served period, at least 4 seconds apart, with a 500-record cap per request. Use comtrade_lookup_countries to resolve reporter/partner codes and comtrade_search_commodities to find HS, SITC or BEC codes for the selected revision.',
   annotations: { readOnlyHint: true, openWorldHint: true },
   errors: [
     {
@@ -165,38 +175,38 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
       reporter_code: z
         .union([
           m49Schema.describe('One M49 reporter code.'),
-          z.array(m49Schema).min(1).max(200).describe('Reporter codes to query together.'),
+          tradeBatchArray(
+            z.array(m49Schema).min(1),
+            'reporter_code',
+            'Reporter codes to query together.',
+          ),
         ])
         .optional()
         .describe(
-          'M49 reporter code or nonempty array (input ceiling 200). Deduplicates and serves the first 20 reporters, disclosing the remainder; served codes of an array that return no records are listed in reportersWithoutRecords. Some codes are partners only (0 World, 250 Metropolitan France, 158 Taiwan, Province of China): France reports as 251, and UN Comtrade publishes the trade of 158 under 490 (Other Asia, nes). Omit only with an explicit partner_code to query all reporters.',
+          'M49 reporter code or nonempty array. Deduplicates and serves the first 20 reporters, disclosing the remainder; served codes of an array that return no records are listed in reportersWithoutRecords. Some codes are partners only (0 World, 250 Metropolitan France, 158 Taiwan, Province of China): France reports as 251, and UN Comtrade publishes the trade of 158 under 490 (Other Asia, nes). Omit only with an explicit partner_code to query all reporters.',
         ),
       flow_code: goodsFlowSchema.describe(
         'Trade flow direction: M=imports, X=exports, RX=re-exports, RM=re-imports.',
       ),
-      period: z
-        .array(periodSchema)
-        .min(1)
-        .max(120)
-        .describe(
-          'One or more periods to query, all annual "YYYY" (e.g. ["2022", "2023"]) or all monthly "YYYYMM" (e.g. ["202201", "202202"]); mixed lengths are rejected. Serves the first 8 distinct periods keyless (12 with authenticated access); the rest, and any period whose request is rate limited, fails on a UN Comtrade server error or network failure, or runs out of time, are listed in unservedPeriods. Input ceiling 120.',
-        ),
+      period: tradeBatchArray(
+        z.array(periodSchema).min(1),
+        'period',
+        'One or more periods to query, all annual "YYYY" (e.g. ["2022", "2023"]) or all monthly "YYYYMM" (e.g. ["202201", "202202"]); mixed lengths are rejected. Serves the first 8 distinct periods keyless (12 with authenticated access); the rest, and any period whose request is rate limited, fails on a UN Comtrade server error or network failure, or runs out of time, are listed in unservedPeriods.',
+      ),
       partner_code: m49Schema
         .optional()
         .describe(
           'M49 code of the trade partner. Use 0 to aggregate across all partners (World total). Omitting it can return World alongside the partner breakdown.',
         ),
-      cmd_code: z
-        .array(codeSchema)
-        .max(200)
-        .optional()
-        .describe(
-          'HS or SITC commodity codes to query. Serves the first 20 distinct codes and discloses the remainder; input ceiling 200. Pass ["TOTAL"] or omit to aggregate all commodities. Use comtrade_search_commodities for codes in the selected HS or SITC edition.',
-        ),
-      classification: goodsClassificationSchema
+      cmd_code: tradeBatchArray(
+        z.array(codeSchema),
+        'cmd_code',
+        'HS, SITC or BEC commodity codes to query. Serves the first 20 distinct codes and discloses the remainder. Pass ["TOTAL"] or omit to aggregate all commodities. Use comtrade_search_commodities for codes in the selected revision.',
+      ).optional(),
+      classification: tradeClassificationSchema
         .default('HS')
         .describe(
-          'Goods classification: HS as reported, H0–H6 with authenticated access, or SITC S1–S4/SS.',
+          'Goods classification: HS as reported, H0–H6 with authenticated access, SITC S1–S4/SS, or BEC B4/B5.',
         ),
       freq: frequencySchema
         .optional()
@@ -326,6 +336,7 @@ export const getTradeFlowsTool = tool('comtrade_get_trade_flows', {
   },
   async handler(input, ctx) {
     const limit = applyTradeLimit(input.limit, ctx, 'comtrade_get_trade_flows');
+    observeExpandedTradeBatch(input, ctx, 'comtrade_get_trade_flows');
     ctx.log.info('comtrade_get_trade_flows', {
       reporter: input.reporter_code,
       flow: input.flow_code,

@@ -13,7 +13,11 @@ import {
   resolveFrequency,
 } from '@/mcp-server/tools/comtrade-input.js';
 import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
-import { getComtradeMetaService } from '@/services/comtrade-meta/comtrade-meta-service.js';
+import { tradeNumberFormat } from '@/mcp-server/tools/trade-values.js';
+import {
+  getComtradeMetaService,
+  resolveAvailabilityClassification,
+} from '@/services/comtrade-meta/comtrade-meta-service.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
@@ -84,7 +88,7 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
         )
         .optional()
         .describe(
-          'Classification code filter (e.g. "HS", "H6", "EB10"). Omitted or blank defaults to HS for goods and EB10 for services.',
+          'Classification code filter. Omitted or blank selects as-reported HS for goods or EB for services. Specify EB10 or EB02 to check that services series explicitly.',
         ),
     })
     .refine(periodsMatchFrequency, {
@@ -103,6 +107,12 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
             period: z.string().describe('Period (YYYY or YYYYMM).'),
             freqCode: z.string().describe('Frequency: A or M.'),
             classificationCode: z.string().describe('Classification code.'),
+            isOriginalClassification: z
+              .boolean()
+              .optional()
+              .describe(
+                'True for the original reporting classification, false for a converted dataset.',
+              ),
             typeCode: z.string().describe('Trade type: C or S.'),
             totalRecords: z
               .number()
@@ -146,11 +156,15 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
     });
 
     const svc = getComtradeMetaService();
+    const classificationCode = resolveAvailabilityClassification(
+      input.type_code,
+      input.classification,
+    );
     const records = await svc.getDataAvailability(
       {
         freqCode: resolveFrequency(input),
         typeCode: input.type_code,
-        classificationCode: input.classification || (input.type_code === 'S' ? 'EB10' : 'HS'),
+        classificationCode,
         ...(input.reporter_code !== undefined && { reporterCode: input.reporter_code }),
         ...(input.period && { period: input.period }),
       },
@@ -167,10 +181,11 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
               input.type_code,
             );
       ctx.enrich.notice(
-        `No data availability records found` +
-          (input.reporter_code !== undefined ? ` for reporter ${input.reporter_code}` : '') +
-          (input.period ? `, period ${input.period}` : '') +
-          `. ${partnerOnly ?? 'Try a different reporter, period, or classification.'}`,
+        `No data availability records found for ${[
+          ...(input.reporter_code !== undefined ? [`reporter ${input.reporter_code}`] : []),
+          ...(input.period ? [`period ${input.period}`] : []),
+          `classification ${classificationCode}`,
+        ].join(', ')}. ${partnerOnly ?? 'Try a different reporter, period, or classification.'}`,
       );
       return {
         datasets: [],
@@ -203,6 +218,9 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
         period: r.period,
         freqCode: r.freqCode,
         classificationCode: r.classificationCode,
+        ...(r.isOriginalClassification != null && {
+          isOriginalClassification: r.isOriginalClassification,
+        }),
         typeCode: r.typeCode,
         ...(r.totalRecords != null && { totalRecords: r.totalRecords }),
         ...(r.firstReleased && { firstReleased: r.firstReleased }),
@@ -231,7 +249,11 @@ export const getDataAvailabilityTool = tool('comtrade_get_data_availability', {
       lines.push(
         `\n**${d.reporterDesc}** (${d.reporterCode}) | ${d.period} | ${d.classificationCode} | freq:${d.freqCode} | typeCode:${d.typeCode}`,
       );
-      if (d.totalRecords != null) lines.push(`  Records: ${d.totalRecords.toLocaleString()}`);
+      if (d.isOriginalClassification !== undefined) {
+        lines.push(`  isOriginalClassification: ${d.isOriginalClassification}`);
+      }
+      if (d.totalRecords != null)
+        lines.push(`  Records: ${tradeNumberFormat.format(d.totalRecords)}`);
       if (d.firstReleased) lines.push(`  First Released: ${d.firstReleased}`);
       if (d.lastReleased) lines.push(`  Last Released: ${d.lastReleased}`);
     }

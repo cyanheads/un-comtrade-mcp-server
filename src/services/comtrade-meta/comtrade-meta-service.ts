@@ -23,6 +23,14 @@ export interface DataAvailabilityParams {
   typeCode?: 'C' | 'S';
 }
 
+/** Use the requested series or the as-reported availability series for the trade type. */
+export function resolveAvailabilityClassification(
+  typeCode: NonNullable<DataAvailabilityParams['typeCode']>,
+  classificationCode?: string,
+): string {
+  return classificationCode?.trim() || (typeCode === 'S' ? 'EB' : 'HS');
+}
+
 /** Queries data availability from the Comtrade API. */
 export class ComtradeMetaService {
   // biome-ignore lint/complexity/noUselessConstructor: params reserved for future use
@@ -38,7 +46,7 @@ export class ComtradeMetaService {
 
     const typeCode = params.typeCode ?? 'C';
     const freqCode = params.freqCode ?? 'A';
-    const classCode = params.classificationCode || (typeCode === 'S' ? 'EB10' : 'HS');
+    const classCode = resolveAvailabilityClassification(typeCode, params.classificationCode);
 
     const endpoint = `${baseUrl}/public/v1/getDA/${typeCode}/${freqCode}/${classCode}`;
 
@@ -100,6 +108,9 @@ export class ComtradeMetaService {
         period: String(row.period ?? ''),
         freqCode: row.freqCode ?? freqCode,
         classificationCode: row.classificationCode ?? classCode,
+        ...(row.isOriginalClassification != null && {
+          isOriginalClassification: row.isOriginalClassification,
+        }),
         typeCode: row.typeCode ?? typeCode,
         ...(row.totalRecords != null && { totalRecords: row.totalRecords }),
         ...(row.firstReleased && { firstReleased: row.firstReleased }),

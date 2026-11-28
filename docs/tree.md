@@ -1,6 +1,6 @@
 # un-comtrade-mcp-server - Directory Structure
 
-Generated on: 2026-11-22 01:19:58
+Generated on: 2026-11-28 08:21:22
 
 ```text
 un-comtrade-mcp-server/
@@ -171,7 +171,9 @@ un-comtrade-mcp-server/
 │   │       ├── comtrade-input.ts
 │   │       ├── reporter-notice.ts
 │   │       ├── services-empty-notice.ts
-│   │       └── trade-page.ts
+│   │       ├── trade-batch-input.ts
+│   │       ├── trade-page.ts
+│   │       └── trade-values.ts
 │   ├── services/
 │   │   ├── comtrade-data/
 │   │   │   ├── comtrade-data-service.ts
@@ -220,7 +222,8 @@ un-comtrade-mcp-server/
 │       ├── lookup-countries.tool.test.ts
 │       ├── reporter-notice.test.ts
 │       ├── search-commodities.tool.test.ts
-│       └── trade-page.test.ts
+│       ├── trade-page.test.ts
+│       └── trade-values.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes

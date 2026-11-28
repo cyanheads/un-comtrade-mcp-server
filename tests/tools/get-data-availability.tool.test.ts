@@ -42,6 +42,7 @@ describe('getDataAvailabilityTool', () => {
       .spyOn(ComtradeMetaService.prototype, 'getDataAvailability')
       .mockResolvedValue([AVAILABILITY_RECORD]);
   });
+  afterEach(() => vi.restoreAllMocks());
 
   it('returns availability records for valid input', async () => {
     const ctx = createMockContext({ errors: getDataAvailabilityTool.errors });
@@ -59,7 +60,7 @@ describe('getDataAvailabilityTool', () => {
   it('preserves blank classification defaults and independent release fields on both surfaces', async () => {
     for (const [type_code, classificationCode] of [
       ['C', 'HS'],
-      ['S', 'EB10'],
+      ['S', 'EB'],
     ] as const) {
       availMock.mockResolvedValue([{ ...AVAILABILITY_RECORD, firstReleased: undefined }]);
       const run = await runToolContract(getDataAvailabilityTool, { type_code, classification: '' });
@@ -249,7 +250,7 @@ describe('getDataAvailabilityTool', () => {
       period: '2022',
     });
     const notice =
-      'No data availability records found for reporter 0, period 2022. Try a different reporter, period, or classification.';
+      'No data availability records found for reporter 0, period 2022, classification HS. Try a different reporter, period, or classification.';
     expect(run.structuredContent).toMatchObject({ datasets: [], notice });
     expect(JSON.stringify(run.content)).toContain(notice);
   });
@@ -333,15 +334,15 @@ describe('getDataAvailabilityTool partner-only reporters', () => {
   it.each([
     [
       250,
-      'No data availability records found for reporter 250, period 2022. Reporter 250 (Metropolitan France) is a partner-only code in UN Comtrade reference data; reporter 251 shares its ISO-3 identity. Retry with reporter_code 251.',
+      'No data availability records found for reporter 250, period 2022, classification HS. Reporter 250 (Metropolitan France) is a partner-only code in UN Comtrade reference data; reporter 251 shares its ISO-3 identity. Retry with reporter_code 251.',
     ],
     [
       158,
-      'No data availability records found for reporter 158, period 2022. Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.',
+      'No data availability records found for reporter 158, period 2022, classification HS. Reporter 158 (Taiwan, Province of China) is a partner-only code in UN Comtrade reference data; UN Comtrade publishes its trade under reporter 490 (Other Asia, nes). Retry with reporter_code 490.',
     ],
     [
       0,
-      'No data availability records found for reporter 0, period 2022. Reporter 0 (World) is a partner-only code in UN Comtrade reference data and has no reporter-valid counterpart. Find a reporter with comtrade_lookup_countries using role "reporter".',
+      'No data availability records found for reporter 0, period 2022, classification HS. Reporter 0 (World) is a partner-only code in UN Comtrade reference data and has no reporter-valid counterpart. Find a reporter with comtrade_lookup_countries using role "reporter".',
     ],
   ])(
     'names partner-only reporter %s and its counterpart on both surfaces',
@@ -363,7 +364,7 @@ describe('getDataAvailabilityTool partner-only reporters', () => {
       reporter_code: 158,
     });
     const notice =
-      'No data availability records found for reporter 158. Try a different reporter, period, or classification.';
+      'No data availability records found for reporter 158, classification EB. Try a different reporter, period, or classification.';
     expect(result.structuredContent).toMatchObject({ datasets: [], notice });
     expect(JSON.stringify(result.content)).toContain(notice);
   });
@@ -378,7 +379,7 @@ describe('getDataAvailabilityTool partner-only reporters', () => {
   });
 });
 
-describe('getDataAvailabilityTool frequency on the availability endpoint', () => {
+describe('getDataAvailabilityTool against the availability endpoint', () => {
   let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
   beforeEach(() => {
     initComtradeMetaService(mockConfig, mockStorage);
@@ -391,6 +392,97 @@ describe('getDataAvailabilityTool frequency on the availability endpoint', () =>
     vi.stubGlobal('fetch', fetchMock);
   });
   afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    [{}, 'EB', 'EB02'],
+    [{ classification: '  ' }, 'EB', 'EB02'],
+    [{ classification: ' eb ' }, 'EB', 'EB02'],
+    [{ classification: ' eb10 ' }, 'EB10', undefined],
+    [{ classification: ' eb02 ' }, 'EB02', 'EB02'],
+  ] as const)('requests Jordan 2023 services with %j as %s', async (args, series, edition) => {
+    // Captured getDA/S/A/EB and EB02 list the EB02 dataset. EB10 returned an empty array.
+    fetchMock.mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      return Response.json({
+        data: url.pathname.endsWith('/EB10')
+          ? []
+          : [
+              {
+                reporterCode: 400,
+                reporterDesc: 'Jordan',
+                period: 2023,
+                classificationCode: 'EB02',
+                isOriginalClassification: true,
+                totalRecords: 49,
+              },
+            ],
+      });
+    });
+    const result = await runToolContract(getDataAvailabilityTool, {
+      reporter_code: 400,
+      period: '2023',
+      type_code: 'S',
+      ...args,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe(`/public/v1/getDA/S/A/${series}`);
+    expect(Object.fromEntries(url.searchParams)).toEqual({ reporterCode: '400', period: '2023' });
+    const text = JSON.stringify(result.content);
+    if (edition === undefined) {
+      const notice =
+        'No data availability records found for reporter 400, period 2023, classification EB10. Try a different reporter, period, or classification.';
+      expect(result.structuredContent).toMatchObject({ datasets: [], notice });
+      expect(text).toContain(notice);
+    } else {
+      expect(result.structuredContent).toMatchObject({
+        datasets: [{ classificationCode: edition, totalRecords: 49 }],
+      });
+      expect(text).toContain(`400) | 2023 | ${edition}`);
+      expect(text).toContain('Records: 49');
+    }
+  });
+
+  it.each([
+    ['C', 'HS'],
+    ['S', 'EB'],
+  ] as const)(
+    'preserves %s classification origin where supplied on both surfaces',
+    async (type_code, classificationCode) => {
+      fetchMock.mockImplementation(async () =>
+        Response.json({
+          data: [
+            { reporterCode: 1, period: 2023, classificationCode, isOriginalClassification: true },
+            { reporterCode: 2, period: 2023, classificationCode, isOriginalClassification: false },
+            { reporterCode: 3, period: 2023, classificationCode, isOriginalClassification: null },
+            { reporterCode: 4, period: 2023, classificationCode },
+          ],
+        }),
+      );
+      const args = { type_code, classification: classificationCode, limit: 2 };
+      const first = await runToolContract(getDataAvailabilityTool, args);
+      expect(first.structuredContent).toMatchObject({
+        datasets: [
+          { reporterCode: 1, classificationCode, isOriginalClassification: true },
+          { reporterCode: 2, classificationCode, isOriginalClassification: false },
+        ],
+        nextOffset: 2,
+      });
+      expect(JSON.stringify(first.content)).toContain('isOriginalClassification: true');
+      expect(JSON.stringify(first.content)).toContain('isOriginalClassification: false');
+      const last = await runToolContract(getDataAvailabilityTool, { ...args, offset: 2 });
+      expect(last.structuredContent).toMatchObject({
+        datasets: [
+          { reporterCode: 3, classificationCode },
+          { reporterCode: 4, classificationCode },
+        ],
+      });
+      expect(last.structuredContent).not.toHaveProperty('datasets.0.isOriginalClassification');
+      expect(last.structuredContent).not.toHaveProperty('datasets.1.isOriginalClassification');
+      expect(JSON.stringify(last.content)).not.toContain('isOriginalClassification');
+    },
+  );
 
   it.each([
     [{ reporter_code: 842, period: '202401' }, '/public/v1/getDA/C/M/HS'],

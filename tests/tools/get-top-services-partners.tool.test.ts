@@ -83,6 +83,28 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it('includes fractional trade values in the total before limiting the ranked partners', async () => {
+  stubTrade([tradeRow(842, 120.125), tradeRow(372, 0.25)]);
+  const { output, text } = await runRanking({ ...args, limit: 1 });
+  expect(output.totalValueUsd).toBe(120.375);
+  expect(text).toContain('Total value of retrieved partners:** 120.375 USD');
+});
+
+it('adds decimal source values without rounding the inputs or display', async () => {
+  stubTrade([tradeRow(842, 1234.10001), tradeRow(372, 0.20002)]);
+  const { output, text } = await runRanking();
+  expect(output.totalValueUsd).toBe(1234.30003);
+  expect(text).toContain('Total value of retrieved partners:** 1,234.30003 USD');
+  expect(text).toContain('Value: 1,234.10001 USD');
+});
+
+it('adds reported tenths as decimals', async () => {
+  stubTrade([tradeRow(842, 0.1), tradeRow(372, 0.2)]);
+  const { output, text } = await runRanking();
+  expect(output.totalValueUsd).toBe(0.3);
+  expect(text).toContain('Total value of retrieved partners:** 0.3 USD');
+});
+
 it('queries both total codes once and ranks the supported series before applying the limit', async () => {
   const fetch = stubTrade([
     tradeRow(0, 400),

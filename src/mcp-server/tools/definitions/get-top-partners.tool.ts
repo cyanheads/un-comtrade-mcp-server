@@ -16,14 +16,20 @@ import {
   singleGoodsCodeMatchesClassification,
 } from '@/mcp-server/tools/comtrade-input.js';
 import { partnerOnlyReporterNotice } from '@/mcp-server/tools/reporter-notice.js';
+import { sumUsd, tradeNumberFormat } from '@/mcp-server/tools/trade-values.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 import { singlePeriodFailure } from './commodity-ranking.js';
 
+interface PartnerIdentity {
+  partnerCode: number;
+  partnerDesc: string;
+}
+
 export const getTopPartnersTool = tool('comtrade_get_top_partners', {
   title: 'Get Top Trading Partners',
   description:
-    'Rank trading partners for a reporter by trade value for a given commodity and flow direction. Returns the top N partners sorted by descending value — answers "who does country X mainly export product Y to?" or "where does country X mainly import product Z from?" for a single period. Fetches a disaggregated breakdown across all partners then sorts locally. Takes an HS or SITC code in the selected classification; omit cmd_code to rank partners for total trade.',
+    'Rank trading partners for a reporter by trade value for a given commodity and flow direction. Returns the top N retrieved partners with known values, sorted by descending value, and lists partners with unknown values separately. Check coverageNotice before interpreting ranks, totals, or shares. Takes an HS or SITC code in the selected classification; omit cmd_code to rank partners for total trade.',
   annotations: { readOnlyHint: true, openWorldHint: true },
   errors: [
     {
@@ -124,15 +130,38 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
             primaryValueUsd: z
               .number()
               .optional()
-              .describe('Trade value in USD (FOB for exports, CIF for imports).'),
+              .describe(
+                'Trade value in USD. Exports use FOB. Imports use CIF when available, otherwise FOB.',
+              ),
             sharePercent: z
               .number()
               .optional()
-              .describe('Share of totalValueUsd across every retrieved partner, as a percentage.'),
+              .describe(
+                'Share of the known trade value across retrieved partners, as a percentage.',
+              ),
           })
           .describe('A single ranked trading partner entry.'),
       )
       .describe('Top partners sorted by descending trade value.'),
+    unrankedPartners: z
+      .array(
+        z
+          .object({
+            partnerCode: z.number().describe('M49 partner code.'),
+            partnerDesc: z.string().describe('Partner country/area name.'),
+          })
+          .describe('A retrieved partner without a known trade value.'),
+      )
+      .optional()
+      .describe(
+        'Retrieved partners whose trade value is unknown. These do not count toward limit.',
+      ),
+    coverageNotice: z
+      .string()
+      .optional()
+      .describe(
+        'Explains when ranks, totals or shares describe a partial retrieval or known values only.',
+      ),
     reporterCode: z.number().describe('M49 reporter code.'),
     reporterDesc: z.string().describe('Reporter country name.'),
     period: z.string().describe('Period queried.'),
@@ -145,7 +174,7 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
     totalValueUsd: z
       .number()
       .optional()
-      .describe('Sum of primary values across all returned partners (before limit truncation).'),
+      .describe('Positive sum of known trade values across all retrieved partners before limit.'),
     truncated: z
       .boolean()
       .describe('True when API returned 500 records and results may be incomplete.'),
@@ -185,13 +214,18 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
         throw singlePeriodFailure(error);
       });
     if (result.referenceNotice) ctx.enrich({ referenceNotice: result.referenceNotice });
+    const capNotice = result.truncated
+      ? 'The preview reached 500 records. Ranks and totals cover retrieved partners only.'
+      : undefined;
 
     if (result.records.length === 0) {
       const status = getComtradeReferenceService().getReporterStatus(input.reporter_code);
       const partnerOnly = partnerOnlyReporterNotice(input.reporter_code, status);
-      ctx.enrich.notice(
-        `No partner data found for reporter ${input.reporter_code}, flow=${input.flow_code}, period=${input.period}. ${partnerOnly ?? 'Use comtrade_get_data_availability to verify data exists.'}`,
-      );
+      if (!result.truncated) {
+        ctx.enrich.notice(
+          `No partner data found for reporter ${input.reporter_code}, flow=${input.flow_code}, period=${input.period}. ${partnerOnly ?? 'Use comtrade_get_data_availability to verify data exists.'}`,
+        );
+      }
       return {
         partners: [],
         reporterCode: input.reporter_code,
@@ -203,30 +237,39 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
         classification: input.classification,
         totalPartners: 0,
         truncated: result.truncated,
+        ...(capNotice && { coverageNotice: capNotice }),
       };
     }
 
     const reporterDesc = result.records[0]?.reporterDesc ?? String(input.reporter_code);
 
-    // Sort by primary value descending, filter out partner 0 (World aggregate)
-    const sorted = result.records
-      .filter((r) => r.partnerCode !== 0)
-      .sort((a, b) => (b.primaryValue ?? 0) - (a.primaryValue ?? 0));
+    const ranked: (PartnerIdentity & { primaryValue: number })[] = [];
+    const unrankedPartners: PartnerIdentity[] = [];
+    for (const { partnerCode, partnerDesc, primaryValue } of result.records) {
+      if (partnerCode === 0) continue;
+      if (primaryValue === undefined) unrankedPartners.push({ partnerCode, partnerDesc });
+      else ranked.push({ partnerCode, partnerDesc, primaryValue });
+    }
+    ranked.sort((a, b) => b.primaryValue - a.primaryValue);
 
-    const totalValueUsd = sorted.reduce((sum, r) => sum + (r.primaryValue ?? 0), 0);
-    const totalPartners = sorted.length;
-    const sliced = sorted.slice(0, input.limit);
+    const totalValueUsd = sumUsd(ranked.map((row) => row.primaryValue));
+    const totalPartners = ranked.length + unrankedPartners.length;
+    const unknownCount = unrankedPartners.length;
+    const unknownNotice =
+      unknownCount > 0
+        ? `${unknownCount === 1 ? '1 partner has an unknown trade value' : `${unknownCount} partners have unknown trade values`}. Totals and shares use known values only.`
+        : undefined;
+    const coverageNotice = [capNotice, unknownNotice].filter(Boolean).join(' ');
 
     return {
-      partners: sliced.map((r, i) => ({
+      partners: ranked.slice(0, input.limit).map((r, i) => ({
         rank: i + 1,
         partnerCode: r.partnerCode,
         partnerDesc: r.partnerDesc,
-        ...(r.primaryValue != null && { primaryValueUsd: r.primaryValue }),
-        ...(totalValueUsd > 0 &&
-          r.primaryValue != null && {
-            sharePercent: Number(((r.primaryValue / totalValueUsd) * 100).toFixed(2)),
-          }),
+        primaryValueUsd: r.primaryValue,
+        ...(totalValueUsd > 0 && {
+          sharePercent: Number(((r.primaryValue / totalValueUsd) * 100).toFixed(2)),
+        }),
       })),
       reporterCode: input.reporter_code,
       reporterDesc,
@@ -237,6 +280,8 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
       totalPartners,
       ...(totalValueUsd > 0 && { totalValueUsd }),
       truncated: result.truncated,
+      ...(unknownCount > 0 && { unrankedPartners }),
+      ...(coverageNotice && { coverageNotice }),
     };
   },
 
@@ -246,20 +291,24 @@ export const getTopPartnersTool = tool('comtrade_get_top_partners', {
       `## Top ${flowLabel} Partners: ${result.reporterDesc} (reporterCode: ${result.reporterCode}) | ${result.period} | ${result.classification} ${result.cmdCode} | flowCode: ${result.flowCode}`,
       `**Total Partners:** ${result.totalPartners}` +
         (result.totalValueUsd != null
-          ? ` | **Total Value:** $${result.totalValueUsd.toLocaleString()} USD`
+          ? ` | **Total Value:** $${tradeNumberFormat.format(result.totalValueUsd)} USD`
           : ''),
     ];
-    if (result.truncated) {
-      lines.push(`> **Note:** Results may be truncated at 500 records (preview endpoint limit).`);
-    }
+    lines.push(`**Upstream truncated:** ${result.truncated}`);
+    if (result.coverageNotice) lines.push(`> ${result.coverageNotice}`);
     for (const p of result.partners) {
       lines.push(`\n**#${p.rank}. ${p.partnerDesc}** (code ${p.partnerCode})`);
       if (p.primaryValueUsd != null) {
-        lines.push(`  Value: $${p.primaryValueUsd.toLocaleString()} USD`);
+        lines.push(`  Value: $${tradeNumberFormat.format(p.primaryValueUsd)} USD`);
       }
       if (p.sharePercent != null) {
         lines.push(`  Share: ${p.sharePercent}%`);
       }
+    }
+    if (result.unrankedPartners?.length) {
+      lines.push('\n**Unranked partners:**');
+      for (const p of result.unrankedPartners)
+        lines.push(`- ${p.partnerDesc} (code ${p.partnerCode})`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

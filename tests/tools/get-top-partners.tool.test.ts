@@ -78,6 +78,11 @@ function rankedPartners(count: number) {
 const args = { reporter_code: 840, flow_code: 'X', period: '2022' };
 
 describe('getTopPartnersTool', () => {
+  it('describes the import valuation fallback for ranked partners', () => {
+    expect(
+      getTopPartnersTool.output.shape.partners.element.shape.primaryValueUsd.description,
+    ).toContain('CIF when available, otherwise FOB');
+  });
   let fetchMock: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -387,6 +392,71 @@ describe('getTopPartnersTool upstream requests', () => {
     vi.stubGlobal('fetch', fetchFake);
   });
   afterEach(() => vi.unstubAllGlobals());
+
+  it('ranks a reported zero and lists unknown values separately on both surfaces', async () => {
+    const data = [
+      { partnerCode: 124, partnerDesc: 'Canada', primaryValue: 120 },
+      { partnerCode: 276, partnerDesc: 'Germany', primaryValue: null },
+      { partnerCode: 392, partnerDesc: 'Japan', primaryValue: 0 },
+      { partnerCode: 0, partnerDesc: 'World', primaryValue: 200 },
+    ].map((partner) => ({
+      ...PARTNER_RECORDS[0],
+      ...partner,
+      motCode: 0,
+      customsCode: 'C00',
+      partner2Code: 0,
+    }));
+    fetchFake.mockImplementationOnce(async () => Response.json({ count: 4, data }));
+    const result = await runToolContract(getTopPartnersTool, args);
+    const notice = '1 partner has an unknown trade value. Totals and shares use known values only.';
+    const output = getTopPartnersTool.output.parse(result.structuredContent);
+    expect(output).toMatchObject({
+      partners: [
+        { rank: 1, partnerCode: 124, primaryValueUsd: 120, sharePercent: 100 },
+        { rank: 2, partnerCode: 392, primaryValueUsd: 0, sharePercent: 0 },
+      ],
+      unrankedPartners: [{ partnerCode: 276, partnerDesc: 'Germany' }],
+      coverageNotice: notice,
+      totalValueUsd: 120,
+      totalPartners: 3,
+    });
+    const text = JSON.stringify(result.content);
+    expect(text).toContain('**#2. Japan**');
+    expect(text).toContain('**Unranked partners:**');
+    expect(text).toContain('Germany (code 276)');
+    expect(text).not.toContain('#3.');
+    expect(text).toContain(notice);
+  });
+
+  it.each([false, true])(
+    'discloses capped coverage with unknown row present: %s',
+    async (hasPartner) => {
+      const data = hasPartner
+        ? [
+            {
+              ...PARTNER_RECORDS[0],
+              primaryValue: null,
+              motCode: 0,
+              customsCode: 'C00',
+              partner2Code: 0,
+            },
+          ]
+        : [];
+      fetchFake.mockImplementationOnce(async () => Response.json({ count: 500, data }));
+      const result = await runToolContract(getTopPartnersTool, { ...args, limit: 1 });
+      const cap =
+        'The preview reached 500 records. Ranks and totals cover retrieved partners only.';
+      expect(result.structuredContent).toMatchObject({
+        partners: [],
+        totalPartners: data.length,
+        truncated: true,
+        coverageNotice: expect.stringContaining(cap),
+      });
+      expect(result.structuredContent).not.toHaveProperty('totalValueUsd');
+      expect(JSON.stringify(result.content)).toContain(cap);
+      expect(JSON.stringify(result.content)).not.toContain('No partner data found');
+    },
+  );
 
   it.each(['   ', ' total ', '9999aa', '84', '8471', '847130'])(
     'queries a single normalized HS selector for %j',

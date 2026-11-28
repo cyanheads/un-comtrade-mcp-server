@@ -6,6 +6,7 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import * as serverConfig from '@/config/server-config.js';
 import {
   annualPeriodSchema,
   codeSchema,
@@ -21,6 +22,7 @@ import { getDataAvailabilityTool } from '@/mcp-server/tools/definitions/get-data
 import { getServicesTradeTool } from '@/mcp-server/tools/definitions/get-services-trade.tool.js';
 import { getTopCommoditiesTool } from '@/mcp-server/tools/definitions/get-top-commodities.tool.js';
 import { getTopPartnersTool } from '@/mcp-server/tools/definitions/get-top-partners.tool.js';
+import { getTopReportersTool } from '@/mcp-server/tools/definitions/get-top-reporters.tool.js';
 import { getTradeBalanceTool } from '@/mcp-server/tools/definitions/get-trade-balance.tool.js';
 import { getTradeFlowsTool } from '@/mcp-server/tools/definitions/get-trade-flows.tool.js';
 import { listServiceCategoriesTool } from '@/mcp-server/tools/definitions/list-service-categories.tool.js';
@@ -66,6 +68,43 @@ it('characterizes scalar reporters, annual defaults, and World requests', async 
     expect.anything(),
   );
 });
+
+it.each([
+  [getTradeFlowsTool, 'period', '2023', 120],
+  [getTradeBalanceTool, 'period', '2023', 120],
+  [getServicesTradeTool, 'period', '2023', 120],
+  [getTradeFlowsTool, 'cmd_code', '01', 200],
+  [getTradeBalanceTool, 'cmd_code', '01', 200],
+  [getTradeFlowsTool, 'reporter_code', 842, 200],
+] as const)(
+  '$name advertises and enforces the effective raw cap on %s',
+  (tool, field, entry, legacy) => {
+    const parse = (size: number) =>
+      tool.input.safeParse({
+        reporter_code: 842,
+        period: ['2023'],
+        ...(tool === getTradeBalanceTool ? {} : { flow_code: 'M' }),
+        [field]: Array.from({ length: size }, () => entry),
+      }).success;
+    const expectMaxItems = (maxItems: number) => {
+      const schema = z.toJSONSchema(tool.input, { io: 'input' }).properties?.[field];
+      const array = expect.objectContaining({ type: 'array', maxItems });
+      expect(schema).toEqual(
+        field === 'reporter_code'
+          ? expect.objectContaining({ anyOf: expect.arrayContaining([array]) })
+          : array,
+      );
+    };
+    expectMaxItems(1_000);
+    expect(parse(legacy + 1)).toBe(true);
+    expect(parse(1_000)).toBe(true);
+    expect(parse(1_001)).toBe(false);
+    vi.spyOn(serverConfig, 'clampTradeLimits').mockReturnValue(false);
+    expectMaxItems(legacy);
+    expect(parse(legacy)).toBe(true);
+    expect(parse(legacy + 1)).toBe(false);
+  },
+);
 
 it('normalizes supported casing and blank goods selectors before requesting', async () => {
   const spy = vi
@@ -141,6 +180,45 @@ it('rejects period/frequency disagreement and monthly services before work', () 
       .success,
   ).toBe(false);
 });
+
+it.each([
+  [' b4 ', ['1', '41', '111', 'TOTAL', '999'], ['4111', '9999AA', 'AG2', '041X']],
+  [
+    ' b5 ',
+    ['1', '41', '411', '1112', '111210', 'TOTAL', '999999'],
+    ['12345', '9999AA', 'AG2', '041X'],
+  ],
+] as const)(
+  'validates %s selectors by native shape, leaving membership to upstream',
+  (classification, valid, invalid) => {
+    const args = { reporter_code: 842, classification, period: ['2023'] };
+    for (const code of valid) {
+      expect(getTradeBalanceTool.input.safeParse({ ...args, cmd_code: [code] }).success).toBe(true);
+      expect(
+        getTradeFlowsTool.input.safeParse({ ...args, flow_code: 'M', cmd_code: [code] }).success,
+      ).toBe(true);
+    }
+    for (const code of invalid) {
+      const result = getTradeFlowsTool.input.safeParse({
+        ...args,
+        flow_code: 'M',
+        cmd_code: [code],
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.message).toMatch(/B4.+B5/);
+      expect(getTradeBalanceTool.input.safeParse({ ...args, cmd_code: [code] }).success).toBe(
+        false,
+      );
+    }
+    for (const tool of [getTopPartnersTool, getTopReportersTool]) {
+      const result = tool.input.safeParse({ ...args, period: '2023', flow_code: 'M' });
+      expect(result.success).toBe(false);
+      expect(
+        result.error?.issues.find((issue) => issue.path.includes('classification'))?.message,
+      ).toMatch(/HS.+SITC/);
+    }
+  },
+);
 it.each([
   [{}, 'A', true],
   [{ freq: 'M' }, 'M', true],
@@ -379,7 +457,7 @@ it('wires normalized balance codes and frequency, services blank omission, and a
   const meta = vi.spyOn(ComtradeMetaService.prototype, 'getDataAvailability').mockResolvedValue([]);
   for (const [type_code, expected] of [
     [' c ', 'HS'],
-    [' s ', 'EB10'],
+    [' s ', 'EB'],
   ]) {
     await runToolContract(getDataAvailabilityTool, { type_code, classification: ' ' });
     expect(meta).toHaveBeenLastCalledWith(

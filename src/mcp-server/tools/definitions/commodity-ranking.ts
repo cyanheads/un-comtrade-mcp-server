@@ -6,6 +6,7 @@
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import {
   type ComtradeDataService,
+  periodFailureError,
   TRADE_DATA_DEADLINE_MS,
 } from '@/services/comtrade-data/comtrade-data-service.js';
 import type { TradeDataParams, TradeFlowRecord } from '@/services/comtrade-data/types.js';
@@ -136,7 +137,23 @@ export async function retrieveCommodityRanking(
       } else {
         classificationCode = edition;
         if (!parentCode) denominatorValueUsd = matching[0]?.primaryValue;
-        const catalog = await reference.getCommodityCodes(edition, signal);
+        const catalog = await reference
+          .getCommodityCodes(edition, signal)
+          .catch((error: unknown) => {
+            recover(error);
+            if (!parentCode) throw error;
+            if (deadline.signal.aborted) {
+              throw periodFailureError([{ period: params.period, reason: 'deadline_exceeded' }], {
+                cause: error,
+              });
+            }
+            throw new McpError(
+              JsonRpcErrorCode.ServiceUnavailable,
+              `The ${edition} HS reference catalog could not be loaded.`,
+              { reason: 'hs_reference_unavailable', classificationCode: edition },
+              { cause: error },
+            );
+          });
         if (parentCode && catalog.size > 0) {
           if (catalog.get(parentCode)?.aggrLevel !== parentCode.length) {
             return {
@@ -172,6 +189,7 @@ export async function retrieveCommodityRanking(
       }
     } catch (error) {
       recover(error);
+      if (parentCode) throw error;
       coverageNotice =
         'TOTAL or the matching HS reference is unavailable; available categories have no ranks or shares.';
     }

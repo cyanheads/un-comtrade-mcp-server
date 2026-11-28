@@ -36,7 +36,7 @@ export function getServerConfig(): ServerConfig {
   return _config;
 }
 
-/** Read the paging policy after startup has parsed configuration. */
+/** Read the paging and batch input policy after startup has parsed configuration. */
 export function clampTradeLimits(): boolean {
   return _config?.clampLimits ?? true;
 }

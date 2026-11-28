@@ -118,7 +118,7 @@ describe('getTradeFlowsTool', () => {
     ).toBe(false);
     expect(
       getTradeFlowsTool.input.safeParse({
-        reporter_code: Array(201).fill(1),
+        reporter_code: Array(1_001).fill(1),
         flow_code: 'X',
         period: ['2022'],
       }).success,
@@ -780,6 +780,75 @@ describe('getTradeFlowsTool on the keyless data service', () => {
     motCode: 0,
     customsCode: 'C00',
     partner2Code: 0,
+  });
+  it('preserves the provider’s FOB-only Canadian import valuation on both surfaces', async () => {
+    const values = { primaryValue: 1_735_797_480.537, fobvalue: 1_735_797_480.537 };
+    previewFake(async () =>
+      Response.json({
+        count: 1,
+        data: [
+          {
+            ...worldRow('2023'),
+            reporterCode: 124,
+            flowCode: 'M',
+            cmdCode: '0901',
+            ...values,
+            cifvalue: null,
+          },
+        ],
+      }),
+    );
+    const result = await run({
+      reporter_code: 124,
+      partner_code: 0,
+      flow_code: 'M',
+      period: ['2023'],
+      cmd_code: ['0901'],
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ records: [values] });
+    expect(result.structuredContent).not.toHaveProperty('records.0.cifvalue');
+    const rows = readTradeTable(textOf(result));
+    expect(rows).toMatchObject([values]);
+    expect(rows[0]).not.toHaveProperty('cifvalue');
+  });
+  it('describes the import valuation fallback in the tool and its output schema', () => {
+    expect(getTradeFlowsTool.description).toContain('CIF when available, otherwise FOB');
+    expect(getTradeFlowsTool.description).toContain('cifvalue and fobvalue');
+    expect(getTradeFlowsTool.output.shape.records.element.shape.primaryValue.description).toContain(
+      'CIF when available, otherwise FOB',
+    );
+  });
+  it('preserves the classification flag independently of reporting through consecutive pages', async () => {
+    const rows = [
+      { cmdCode: '0901', isOriginalClassification: true, isReported: false },
+      { cmdCode: '0902', isOriginalClassification: false, isReported: true },
+      { cmdCode: '0903', isOriginalClassification: null },
+      { cmdCode: '0904' },
+    ];
+    previewFake(async () =>
+      Response.json({
+        count: 4,
+        data: rows.map((row) => ({ ...worldRow('2023'), classificationCode: 'H6', ...row })),
+      }),
+    );
+    const args = {
+      reporter_code: 842,
+      partner_code: 0,
+      flow_code: 'X',
+      period: ['2023'],
+      limit: 2,
+    };
+    const first = await run(args);
+    expect(first.structuredContent).toMatchObject({ records: rows.slice(0, 2), nextOffset: 2 });
+    expect(readTradeTable(textOf(first))).toMatchObject(rows.slice(0, 2));
+    const last = await run({ ...args, offset: 2 });
+    expect(last.structuredContent).toMatchObject({ shown: 2, offset: 2 });
+    expect(last.structuredContent).not.toHaveProperty('nextOffset');
+    expect(last.structuredContent).not.toHaveProperty('records.0.isOriginalClassification');
+    expect(last.structuredContent).not.toHaveProperty('records.1.isOriginalClassification');
+    expect(readTradeTable(textOf(last))).toMatchObject([{ cmdCode: '0903' }, { cmdCode: '0904' }]);
+    expect(textOf(last)).not.toContain('isOriginalClassification');
   });
   it('serves the periods around one that keeps answering a 503 page, naming it and its status on both surfaces', async () => {
     previewFake(async (period) =>

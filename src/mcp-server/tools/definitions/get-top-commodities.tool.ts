@@ -12,6 +12,7 @@ import {
   periodSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
 import { counterpartNotices } from '@/mcp-server/tools/reporter-notice.js';
+import { sumUsd, tradeNumberFormat } from '@/mcp-server/tools/trade-values.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 import { retrieveCommodityRanking, singlePeriodFailure } from './commodity-ranking.js';
@@ -60,9 +61,17 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       thrownBy: 'service',
     },
     {
+      reason: 'hs_reference_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'The HS reference required to resolve the parent drill-down could not be loaded.',
+      recovery: 'Retry the ranking when the HS reference catalog is available.',
+      retryable: true,
+      thrownBy: 'service',
+    },
+    {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: 'With TOTAL or the HS reference unavailable, UN Comtrade rate-limited the aggregate fallback through its retries.',
+      when: 'UN Comtrade rate-limits the scoped lookup or unscoped aggregate fallback through its retries.',
       recovery: 'Wait the number of seconds the error states, then retry the ranking.',
       retryable: true,
       thrownBy: 'service',
@@ -70,7 +79,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     {
       reason: 'upstream_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'With TOTAL or the HS reference unavailable, the aggregate fallback hit a UN Comtrade server error or network failure through its retries.',
+      when: 'The scoped lookup or unscoped aggregate fallback hits a UN Comtrade server error or network failure through its retries.',
       recovery: 'Wait a minute and retry the same call.',
       retryable: true,
       thrownBy: 'service',
@@ -78,7 +87,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     {
       reason: 'deadline_exceeded',
       code: JsonRpcErrorCode.Timeout,
-      when: "With TOTAL or the HS reference unavailable, the aggregate fallback did not complete within the call's time budget.",
+      when: "The scoped lookup, scoped catalog load or unscoped aggregate fallback exceeds the ranking's time budget.",
       recovery: 'Retry the ranking in a few seconds; it did not finish within its time budget.',
       retryable: true,
       thrownBy: 'service',
@@ -156,7 +165,9 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
             primaryValueUsd: z
               .number()
               .optional()
-              .describe('Trade value in USD (FOB for exports, CIF for imports).'),
+              .describe(
+                'Trade value in USD. Exports use FOB. Imports use CIF when available, otherwise FOB.',
+              ),
             sharePercent: z
               .number()
               .optional()
@@ -270,7 +281,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
     const reporterDesc = result.records[0]?.reporterDesc ?? String(input.reporter_code);
 
     const sorted = result.records.sort((a, b) => (b.primaryValue ?? 0) - (a.primaryValue ?? 0));
-    const totalValueUsd = sorted.reduce((sum, r) => sum + (r.primaryValue ?? 0), 0);
+    const totalValueUsd = sumUsd(sorted.map((row) => row.primaryValue));
     const totalCommodities = sorted.length;
     const valuesKnown = sorted.every((row) => row.primaryValue != null);
     const residualCodes = RESIDUAL_CODES[input.aggr_level];
@@ -293,7 +304,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       .map((residual) => {
         const figures = [
           ...(residual.primaryValueUsd != null
-            ? [`${residual.primaryValueUsd.toLocaleString()} USD`]
+            ? [`${tradeNumberFormat.format(residual.primaryValueUsd)} USD`]
             : []),
           ...(residual.sharePercent != null
             ? [
@@ -340,14 +351,14 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       `## Top ${flowLabel} Commodities: ${result.reporterDesc} (reporterCode: ${result.reporterCode}) | ${result.period} | ${levelLabel} (aggrLevel: ${result.aggrLevel}) | flowCode: ${result.flowCode}`,
       `**Total Categories:** ${result.totalCommodities}` +
         (result.totalValueUsd != null
-          ? ` | **Total Value:** $${result.totalValueUsd.toLocaleString()} USD`
+          ? ` | **Total Value:** $${tradeNumberFormat.format(result.totalValueUsd)} USD`
           : ''),
     ];
     if (result.classificationCode != null) lines.push(`HS edition: ${result.classificationCode}`);
     if (result.parentCode != null) lines.push(`Parent code: ${result.parentCode}`);
     if (result.denominatorValueUsd != null)
       lines.push(
-        `${result.parentCode ? `Parent ${result.parentCode}` : 'TOTAL'} denominator: $${result.denominatorValueUsd.toLocaleString()} USD`,
+        `${result.parentCode ? `Parent ${result.parentCode}` : 'TOTAL'} denominator: $${tradeNumberFormat.format(result.denominatorValueUsd)} USD`,
       );
     if (result.truncated) {
       lines.push('> **Note:** Coverage is incomplete; ranks and shares are withheld.');
@@ -358,7 +369,7 @@ export const getTopCommoditiesTool = tool('comtrade_get_top_commodities', {
       );
       if (c.residual) lines.push('  Residual: true');
       if (c.primaryValueUsd != null) {
-        lines.push(`  Value: $${c.primaryValueUsd.toLocaleString()} USD`);
+        lines.push(`  Value: $${tradeNumberFormat.format(c.primaryValueUsd)} USD`);
       }
       if (c.sharePercent != null) {
         lines.push(`  Share: ${c.sharePercent}%`);

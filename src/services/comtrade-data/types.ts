@@ -7,7 +7,7 @@
 export interface TradeDataParams {
   /** Aggregation level for HS (2, 4, or 6). */
   aggrLevel?: number;
-  /** Goods or services classification code (HS, SITC, or EBOPS). */
+  /** Goods or services classification code (HS, SITC, BEC, or EBOPS). */
   classificationCode?: string;
   /** Commodity codes or AG selectors, comma-separated. TOTAL = sum all commodities. */
   cmdCode?: string;
@@ -62,7 +62,7 @@ export interface TradeFlowRecord {
   cifvalue?: number;
   /** Actual classification edition supplied on the upstream row. */
   classificationCode?: string;
-  /** HS, SITC, or EBOPS commodity/category code or "TOTAL". */
+  /** HS, SITC, BEC, or EBOPS commodity/category code or "TOTAL". */
   cmdCode: string;
   /** Commodity description (joined from reference cache). */
   cmdDesc: string;
@@ -87,7 +87,7 @@ export interface TradeFlowRecord {
   partnerDesc: string;
   /** Period (YYYY or YYYYMM). */
   period: string;
-  /** Primary value in USD (FOB for exports, CIF for imports). */
+  /** Primary value in USD. Exports use FOB. Imports use CIF when available, otherwise FOB. */
   primaryValue?: number;
   /** Quantity in commodity-specific units; absent when not reported (0 with unit code -1). */
   qty?: number;

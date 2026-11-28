@@ -16,6 +16,10 @@ import {
 import { mixedPartnerBreakdownNotice } from '@/mcp-server/tools/reporter-notice.js';
 import { servicesEmptyNotice } from '@/mcp-server/tools/services-empty-notice.js';
 import {
+  observeExpandedTradeBatch,
+  tradeBatchArray,
+} from '@/mcp-server/tools/trade-batch-input.js';
+import {
   applyTradeLimit,
   formatTradePage,
   limitClampSchema,
@@ -114,13 +118,11 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
     ...tradePageInput,
     reporter_code: m49Schema.describe('M49 numeric code of the reporting country (0–999).'),
     flow_code: flowSchema.describe('Trade flow: M=imports (debits), X=exports (credits).'),
-    period: z
-      .array(annualPeriodSchema)
-      .min(1)
-      .max(120)
-      .describe(
-        'Annual periods YYYY. Serves the first 8 distinct periods keyless (12 with authenticated access); the rest, and any period whose request is rate limited, fails on a UN Comtrade server error or network failure, or runs out of time, are listed in unservedPeriods. Input ceiling 120.',
-      ),
+    period: tradeBatchArray(
+      z.array(annualPeriodSchema).min(1),
+      'period',
+      'Annual periods YYYY. Serves the first 8 distinct periods keyless (12 with authenticated access); the rest, and any period whose request is rate limited, fails on a UN Comtrade server error or network failure, or runs out of time, are listed in unservedPeriods.',
+    ),
     partner_code: m49Schema
       .optional()
       .describe(
@@ -182,6 +184,7 @@ export const getServicesTradeTool = tool('comtrade_get_services_trade', {
   },
   async handler(input, ctx) {
     const limit = applyTradeLimit(input.limit, ctx, 'comtrade_get_services_trade');
+    observeExpandedTradeBatch(input, ctx, 'comtrade_get_services_trade');
     // One budget for the data fetch and the empty-result scheme lookup.
     const deadlineAt = Date.now() + TRADE_DATA_DEADLINE_MS;
     const { classification } = input;

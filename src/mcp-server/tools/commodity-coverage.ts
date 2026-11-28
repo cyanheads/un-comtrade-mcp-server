@@ -4,7 +4,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { goodsClassificationSchema } from '@/mcp-server/tools/comtrade-input.js';
+import { tradeClassificationSchema } from '@/mcp-server/tools/comtrade-input.js';
 import type { TradeFlowRecord } from '@/services/comtrade-data/types.js';
 
 export const cmdCodesWithoutRecordsSchema = z
@@ -50,7 +50,7 @@ export function commodityCoverage(
     edition &&
     edition !== 'HS' &&
     edition !== 'SS' &&
-    goodsClassificationSchema.safeParse(edition).data === edition
+    tradeClassificationSchema.safeParse(edition).data === edition
   ) {
     return {
       missing,

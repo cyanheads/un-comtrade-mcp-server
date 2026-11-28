@@ -27,8 +27,9 @@ it('characterizes explicit classification forwarding and sparse metadata', async
 it.each([
   ['C', undefined, 'HS'],
   ['C', '', 'HS'],
-  ['S', undefined, 'EB10'],
-  ['S', '', 'EB10'],
+  ['S', undefined, 'EB'],
+  ['S', '', 'EB'],
+  ['S', '  ', 'EB'],
 ] as const)('defaults %s/%s to %s', async (typeCode, classificationCode, expected) => {
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [] }));
   vi.stubGlobal('fetch', fetchMock);
@@ -36,7 +37,9 @@ it.each([
     typeCode,
     classificationCode,
   });
-  expect(String(fetchMock.mock.calls[0]![0])).toContain(`/${typeCode}/A/${expected}`);
+  expect(new URL(String(fetchMock.mock.calls[0]?.[0])).pathname).toBe(
+    `/public/v1/getDA/${typeCode}/A/${expected}`,
+  );
 });
 it('preserves independent release dates and omits absent dates', async () => {
   vi.stubGlobal(

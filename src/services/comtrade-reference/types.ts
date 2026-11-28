@@ -157,8 +157,8 @@ export type ServiceCategoryListing =
 /** Explicit UN Comtrade HS editions, in membership tag order. */
 export const HS_EDITIONS = ['H0', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'] as const;
 
-/** Goods catalog names supported by UN Comtrade's reference endpoint. */
-export const COMMODITY_CLASSIFICATIONS = [
+/** HS and SITC are the goods classification families supported by partner/reporter rankings. */
+export const RANKED_GOODS_CLASSIFICATIONS = [
   'HS',
   ...HS_EDITIONS,
   'SS',
@@ -167,6 +167,15 @@ export const COMMODITY_CLASSIFICATIONS = [
   'S3',
   'S4',
 ] as const;
+
+/** Native BEC aggregation levels, excluding TOTAL at level 0, which is always unfiltered. */
+export const BEC_LEVELS = {
+  B4: [1, 2, 3],
+  B5: [1, 2, 3, 4, 6],
+} as const;
+
+/** Goods catalog names supported by UN Comtrade's reference endpoint. */
+export const COMMODITY_CLASSIFICATIONS = [...RANKED_GOODS_CLASSIFICATIONS, 'B4', 'B5'] as const;
 
 /** A commodity catalog entry retaining its native aggregation level. */
 export interface CommodityCode {

@@ -15,17 +15,22 @@ import {
   codeSchema,
   frequencySchema,
   GOODS_CODE_SHAPE_MESSAGE,
-  goodsClassificationSchema,
   goodsCodesMatchClassification,
   m49Schema,
   periodSchema,
   periodsMatchFrequency,
   resolveFrequency,
+  tradeClassificationSchema,
 } from '@/mcp-server/tools/comtrade-input.js';
 import {
   partnerCounterpartNotice,
   partnerOnlyReporterNotice,
 } from '@/mcp-server/tools/reporter-notice.js';
+import {
+  observeExpandedTradeBatch,
+  tradeBatchArray,
+} from '@/mcp-server/tools/trade-batch-input.js';
+import { sumUsd, tradeNumberFormat } from '@/mcp-server/tools/trade-values.js';
 import {
   describePeriodFailures,
   getComtradeDataService,
@@ -37,10 +42,9 @@ import {
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 
 /**
- * Whether two distinct codes return overlapping rows, which a balance would sum twice. HS editions
- * and SITC revisions nest by prefix (SITC memorandum `X` codes and legacy `9999AA` included) and a
- * code's level is its length, so `TOTAL` overlaps everything and `AG<n>` every code of another
- * length.
+ * Whether distinct codes return overlapping rows, which a balance would sum twice. HS, SITC and BEC
+ * nest by prefix, including SITC memorandum `X` codes and legacy `9999AA`. `TOTAL` overlaps everything
+ * and each HS/SITC `AG<n>` selector overlaps codes of another length.
  */
 function codesOverlap(a: string, b: string): boolean {
   if (a === 'TOTAL' || b === 'TOTAL') return true;
@@ -63,10 +67,30 @@ function firstOverlap(codes: readonly string[]): [string, string] | undefined {
 /** Note for a served period where neither flow returned rows. */
 const NEITHER_FLOW_NOTE = 'No export or import data found for this period.';
 
+interface FlowValues {
+  hasUnknown: boolean;
+  knownValues: number[];
+}
+
+/** Unknown values and real zeros have different effects on period coverage. */
+function addFlowValue(flow: FlowValues | undefined, value: number | undefined): FlowValues {
+  const values = flow ?? { knownValues: [], hasUnknown: false };
+  if (value === undefined) values.hasUnknown = true;
+  else values.knownValues.push(value);
+  return values;
+}
+
+function unknownValueNote(label: string, flow: FlowValues | undefined): string | undefined {
+  if (!flow?.hasUnknown) return undefined;
+  return flow.knownValues.length === 0
+    ? `${label} values are unknown for all returned rows.`
+    : `${label} sum includes known values only.`;
+}
+
 export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
   title: 'Get Trade Balance',
   description:
-    'Compute the trade balance for a country over one or more periods — total exports minus total imports — with an optional HS or SITC commodity filter whose codes must not overlap. Keyless preview makes two requests per served period, at least 4 seconds apart; authenticated calls batch periods. Returns the export and import values per period and, when both flows have data, the signed balance (USD) and coverage ratio (exports / imports). Note: mirror asymmetry is common — balance reflects values as reported by this country; the same flow may be recorded differently by the partner. Uses comtrade_lookup_countries to resolve reporter codes.',
+    'Compute the trade balance for a country over one or more periods — total exports minus total imports — with an optional HS, SITC or BEC commodity filter whose codes must not overlap. Keyless preview makes two requests per served period, at least 4 seconds apart; authenticated calls batch periods. Returns sums of known export and import values per period. The signed balance (USD) and coverage ratio (exports / imports) require uncapped results and known values for both flows. Note: mirror asymmetry is common — the same flow may be recorded differently by the partner. Uses comtrade_lookup_countries to resolve reporter codes.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   input: z
@@ -79,23 +103,19 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
         .describe(
           'M49 partner code (0–999); defaults to World (0). The balance uses the reporter’s values. A partner code with a reporter-valid counterpart (840 → 842, 158 → 490) that returns no data fails with no_data naming that counterpart.',
         ),
-      period: z
-        .array(periodSchema)
-        .min(1)
-        .max(120)
-        .describe(
-          'Periods, all annual (YYYY) or all monthly (YYYYMM); mixed lengths are rejected. Serves the first 4 distinct periods keyless (12 with authenticated access); the rest, and any period whose export or import request is rate limited, hits a UN Comtrade server error or network failure, or runs out of time, are listed in unservedPeriods. Input ceiling 120.',
-        ),
-      cmd_code: z
-        .array(codeSchema)
-        .max(200)
-        .optional()
-        .describe(
-          'HS or SITC commodity codes whose values the balance sums; omit for the overall balance across all commodities. Exact duplicates count once. Overlapping codes are rejected because their shared trade would be summed twice: a code beside one of its sub-codes (27 and 2709), TOTAL beside any other entry, or AG<n> beside another AG selector or a code whose length is not n. Serves the first 20 and discloses the remainder; input ceiling 200.',
-        ),
-      classification: goodsClassificationSchema
+      period: tradeBatchArray(
+        z.array(periodSchema).min(1),
+        'period',
+        'Periods, all annual (YYYY) or all monthly (YYYYMM); mixed lengths are rejected. Serves the first 4 distinct periods keyless (12 with authenticated access); the rest, and any period whose export or import request is rate limited, hits a UN Comtrade server error or network failure, or runs out of time, are listed in unservedPeriods.',
+      ),
+      cmd_code: tradeBatchArray(
+        z.array(codeSchema),
+        'cmd_code',
+        'HS, SITC or BEC commodity codes whose values the balance sums; omit for the overall balance across all commodities. Exact duplicates count once. Overlapping codes are rejected because their shared trade would be summed twice: a code beside one of its sub-codes (27 and 2709), TOTAL beside any other entry, or AG<n> beside another AG selector or a code whose length is not n. Serves the first 20 and discloses the remainder.',
+      ).optional(),
+      classification: tradeClassificationSchema
         .default('HS')
-        .describe('Goods classification: HS/H0–H6 or SITC S1–S4/SS.'),
+        .describe('Goods classification: HS/H0–H6, SITC S1–S4/SS, or BEC B4/B5.'),
       freq: frequencySchema
         .optional()
         .describe(
@@ -121,29 +141,27 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
             exportsUsd: z
               .number()
               .optional()
-              .describe('Total exports value in USD for this period.'),
+              .describe('Sum of known export values in USD for this period.'),
             importsUsd: z
               .number()
               .optional()
-              .describe('Total imports value in USD for this period.'),
+              .describe('Sum of known import values in USD for this period.'),
             balanceUsd: z
               .number()
               .optional()
               .describe(
-                'Trade balance in USD: exports minus imports, only when both flows have data for the period. Positive = surplus.',
+                'Trade balance in USD: exports minus imports, only when both uncapped flows returned data and all contributing values are known. Positive = surplus.',
               ),
             coverageRatio: z
               .number()
               .optional()
               .describe(
-                'Export coverage ratio: exports / imports. >1 = surplus, <1 = deficit. Only when both flows have data and imports are above zero.',
+                'Export coverage ratio: exports / imports. >1 = surplus, <1 = deficit. Requires both uncapped flows with all values known and imports above zero.',
               ),
             note: z
               .string()
               .optional()
-              .describe(
-                'Data note when a flow has no data for this period: export only, import only, or neither.',
-              ),
+              .describe('Data note for absent flows or unknown values affecting the period.'),
           })
           .describe('Trade balance values for a single reporting period.'),
       )
@@ -160,6 +178,10 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       .array(z.string())
       .optional()
       .describe('Commodity codes used in the query (absent when querying all commodities).'),
+    classification: z
+      .enum(['B4', 'B5'])
+      .optional()
+      .describe('BEC revision requested for both flows.'),
     mirrorCaveat: z
       .string()
       .describe(
@@ -280,6 +302,11 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
     cmdCodesWithoutRecords: { render: renderCmdCodesWithoutRecords },
   },
   async handler(input, ctx) {
+    observeExpandedTradeBatch(input, ctx, 'comtrade_get_trade_balance');
+    const bec =
+      input.classification === 'B4' || input.classification === 'B5'
+        ? input.classification
+        : undefined;
     ctx.log.info('comtrade_get_trade_balance', {
       reporter: input.reporter_code,
       periods: input.period.length,
@@ -360,8 +387,7 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
       importResult.records[0]?.reporterDesc ??
       String(input.reporter_code);
 
-    // Build a map of period → { exports, imports }
-    const periodMap = new Map<string, { exportsUsd?: number; importsUsd?: number }>();
+    const periodMap = new Map<string, { exports?: FlowValues; imports?: FlowValues }>();
 
     for (const p of servedPeriods) {
       if (!failed.has(p)) periodMap.set(p, {});
@@ -370,33 +396,53 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
     for (const r of exportResult.records) {
       if (failed.has(r.period)) continue;
       const entry = periodMap.get(r.period) ?? {};
-      entry.exportsUsd = (entry.exportsUsd ?? 0) + (r.primaryValue ?? 0);
+      entry.exports = addFlowValue(entry.exports, r.primaryValue);
       periodMap.set(r.period, entry);
     }
     for (const r of importResult.records) {
       if (failed.has(r.period)) continue;
       const entry = periodMap.get(r.period) ?? {};
-      entry.importsUsd = (entry.importsUsd ?? 0) + (r.primaryValue ?? 0);
+      entry.imports = addFlowValue(entry.imports, r.primaryValue);
       periodMap.set(r.period, entry);
     }
 
-    const periods = Array.from(periodMap.entries()).map(([period, { exportsUsd, importsUsd }]) => {
-      // A flow without rows may be unreported rather than zero, so the derived figures need both.
-      const bothFlows = exportsUsd !== undefined && importsUsd !== undefined;
-      const note =
-        exportsUsd === undefined && importsUsd === undefined
+    const periods = Array.from(periodMap.entries()).map(([period, { exports, imports }]) => {
+      const exportValues = exports?.knownValues ?? [];
+      const importValues = imports?.knownValues ?? [];
+      const exportsUsd = exportValues.length ? sumUsd(exportValues) : undefined;
+      const importsUsd = importValues.length ? sumUsd(importValues) : undefined;
+      const unknownNotes = [
+        unknownValueNote('Export', exports),
+        unknownValueNote('Import', imports),
+      ].filter(Boolean);
+      const canBalance =
+        !truncated &&
+        unknownNotes.length === 0 &&
+        exportsUsd !== undefined &&
+        importsUsd !== undefined;
+      const absentNote =
+        !exports && !imports
           ? NEITHER_FLOW_NOTE
-          : importsUsd === undefined
+          : !imports
             ? 'Export data only; no import data found for this period.'
-            : exportsUsd === undefined
+            : !exports
               ? 'Import data only; no export data found for this period.'
               : undefined;
+      const note = [
+        absentNote,
+        ...unknownNotes,
+        unknownNotes.length > 0 && 'Balance and coverage ratio are unavailable.',
+      ]
+        .filter(Boolean)
+        .join(' ');
       return {
         period,
         ...(exportsUsd !== undefined && { exportsUsd }),
         ...(importsUsd !== undefined && { importsUsd }),
-        ...(bothFlows && { balanceUsd: exportsUsd - importsUsd }),
-        ...(bothFlows && importsUsd > 0 && { coverageRatio: exportsUsd / importsUsd }),
+        ...(canBalance && {
+          balanceUsd: sumUsd([...exportValues, ...importValues.map((amount) => -amount)]),
+        }),
+        ...(canBalance && importsUsd > 0 && { coverageRatio: exportsUsd / importsUsd }),
         ...(note && { note }),
       };
     });
@@ -464,10 +510,16 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
           ? `Period ${emptyPeriods[0]} returned no export or import data; use comtrade_get_data_availability to check whether it is published.`
           : `Periods ${emptyPeriods.join(', ')} returned no export or import data; use comtrade_get_data_availability to check whether they are published.`,
       );
-    if (truncated)
+    if (truncated) {
+      const cappedFlows = exportResult.truncated
+        ? importResult.truncated
+          ? 'export and import'
+          : 'export'
+        : 'import';
       notices.push(
-        'A preview response reached 500 records; balance values may be incomplete. Narrow the commodity query.',
+        `A preview response reached 500 records. Returned ${cappedFlows} sums may be partial. Balance and coverage ratio are unavailable. Narrow the commodity query.`,
       );
+    }
     if (!truncated) {
       const { missing, editionNotice } = commodityCoverage(
         codes,
@@ -489,24 +541,29 @@ export const getTradeBalanceTool = tool('comtrade_get_trade_balance', {
         importResult.records[0]?.partnerDesc ??
         String(input.partner_code),
       ...(codes.length > 0 && { cmdCodes: codes }),
-      mirrorCaveat:
-        'Balance reflects values as reported by this country. Mirror asymmetry is common — the partner country may report different values for the same flow due to CIF/FOB valuation, timing, re-exports, and country definition differences.',
+      ...(bec && { classification: bec }),
+      mirrorCaveat: `Balance ${bec ? 'uses this reporter’s trade values in the selected BEC revision. Check isOriginalClassification on the underlying trade flow rows for the basis when supplied' : 'reflects values as reported by this country'}. Mirror asymmetry is common — the partner country may report different values for the same flow due to CIF/FOB valuation, timing, re-exports, and country definition differences.`,
     };
   },
 
   format: (result) => {
     const lines = [`## Trade Balance: ${result.reporterDesc} (code ${result.reporterCode})`];
     lines.push(`**Partner:** ${result.partnerDesc} (code ${result.partnerCode})`);
+    if (result.classification) lines.push(`**Classification:** ${result.classification}`);
     if (result.cmdCodes?.length) {
       lines.push(`**Commodities:** ${result.cmdCodes.join(', ')}`);
     }
     for (const p of result.periods) {
       lines.push(`\n### Period: ${p.period}`);
-      if (p.exportsUsd != null) lines.push(`**Exports:** $${p.exportsUsd.toLocaleString()} USD`);
-      if (p.importsUsd != null) lines.push(`**Imports:** $${p.importsUsd.toLocaleString()} USD`);
+      if (p.exportsUsd != null)
+        lines.push(`**Exports:** $${tradeNumberFormat.format(p.exportsUsd)} USD`);
+      if (p.importsUsd != null)
+        lines.push(`**Imports:** $${tradeNumberFormat.format(p.importsUsd)} USD`);
       if (p.balanceUsd != null) {
         const label = p.balanceUsd > 0 ? ' (Surplus)' : p.balanceUsd < 0 ? ' (Deficit)' : '';
-        lines.push(`**Balance:** $${Math.abs(p.balanceUsd).toLocaleString()} USD${label}`);
+        lines.push(
+          `**Balance:** ${p.balanceUsd < 0 ? '-' : ''}$${tradeNumberFormat.format(Math.abs(p.balanceUsd))} USD${label}`,
+        );
       }
       if (p.coverageRatio != null) {
         lines.push(`**Coverage Ratio:** ${p.coverageRatio}`);

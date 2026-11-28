@@ -76,6 +76,26 @@ describe('getTradeBalanceTool', () => {
     expect(p.coverageRatio).toBeCloseTo(2 / 3, 3);
   });
 
+  it('subtracts the source decimals before rounding either flow total', async () => {
+    fetchMock.mockImplementation(async ({ flowCode }: { flowCode: string }) => ({
+      records:
+        flowCode === 'X'
+          ? [
+              { ...EXPORT_RECORD, primaryValue: 1e16 },
+              { ...EXPORT_RECORD, primaryValue: 0.00001 },
+            ]
+          : [{ ...IMPORT_RECORD, primaryValue: 1e16 }],
+      totalCount: flowCode === 'X' ? 2 : 1,
+      truncated: false,
+    }));
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2022'],
+    });
+    expect(result.structuredContent).toMatchObject({ periods: [{ balanceUsd: 0.00001 }] });
+    expect(textOf(result)).toContain('**Balance:** $0.00001 USD (Surplus)');
+  });
+
   it.each([undefined, 0, 276])(
     'forwards bilateral partner %s to both flows and echoes it on both surfaces',
     async (partner_code) => {
@@ -226,7 +246,7 @@ describe('getTradeBalanceTool', () => {
     expect(periods[2]).toEqual({ period: '2024', note: neither });
     const text = textOf(result);
     expect(text).toContain(`### Period: 2024\n> Note: ${neither}`);
-    expect(text).toContain('**Balance:** $1,000,000,000 USD (Deficit)');
+    expect(text).toContain('**Balance:** -$1,000,000,000 USD (Deficit)');
     expect(text.match(/\*\*Balance:\*\*|Surplus|Deficit/g)).toEqual(['**Balance:**', 'Deficit']);
     expect(text).not.toContain('Period: 2025');
     expect(text).toContain(`> ${notice}`);
@@ -272,7 +292,7 @@ describe('getTradeBalanceTool', () => {
     });
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('**Balance:** $2 USD (Surplus)');
-    expect(text).toContain('**Balance:** $2 USD (Deficit)');
+    expect(text).toContain('**Balance:** -$2 USD (Deficit)');
     expect(text).toContain('**Balance:** $0 USD\n**Coverage Ratio:** 1\n');
     expect(text.match(/Surplus|Deficit/g)).toEqual(['Surplus', 'Deficit']);
   });
@@ -323,6 +343,83 @@ describe('getTradeBalanceTool', () => {
     expect(text).toContain('**Balance:** $5,000,000 USD (Surplus)');
     expect(text).not.toContain('Coverage Ratio');
   });
+
+  it('distinguishes entirely unknown and partially known flows from zero and answered empty periods', async () => {
+    const { primaryValue: _importValue, ...unknownImport } = IMPORT_RECORD;
+    const { primaryValue: _exportValue, ...unknownExport } = EXPORT_RECORD;
+    fetchMock.mockImplementation(async ({ flowCode }: { flowCode: string }) => {
+      const records =
+        flowCode === 'X'
+          ? [
+              { ...EXPORT_RECORD, primaryValue: 120 },
+              { ...EXPORT_RECORD, period: '2023', primaryValue: 30 },
+              { ...unknownExport, period: '2023', cmdCode: '0901' },
+              { ...EXPORT_RECORD, period: '2024', primaryValue: 120 },
+            ]
+          : [
+              unknownImport,
+              { ...IMPORT_RECORD, period: '2023', primaryValue: 20 },
+              { ...IMPORT_RECORD, period: '2024', primaryValue: 0 },
+            ];
+      return { records, totalCount: records.length, truncated: false };
+    });
+    const result = await runToolContract(getTradeBalanceTool, {
+      reporter_code: 840,
+      period: ['2022', '2023', '2024', '2025'],
+    });
+    const { periods } = result.structuredContent as { periods: Record<string, unknown>[] };
+    expect(periods).toEqual([
+      {
+        period: '2022',
+        exportsUsd: 120,
+        note: 'Import values are unknown for all returned rows. Balance and coverage ratio are unavailable.',
+      },
+      {
+        period: '2023',
+        exportsUsd: 30,
+        importsUsd: 20,
+        note: 'Export sum includes known values only. Balance and coverage ratio are unavailable.',
+      },
+      { period: '2024', exportsUsd: 120, importsUsd: 0, balanceUsd: 120 },
+      { period: '2025', note: 'No export or import data found for this period.' },
+    ]);
+    const text = textOf(result);
+    for (const period of periods) {
+      if (period.note) expect(text).toContain(period.note);
+    }
+    expect(text.match(/\*\*Balance:\*\*/g)).toHaveLength(1);
+    expect(text).not.toContain('**Coverage Ratio:**');
+  });
+
+  it.each(['X', 'M'])(
+    'withholds derived figures across periods when %s is capped',
+    async (cappedFlow) => {
+      fetchMock.mockImplementation(async ({ flowCode }: { flowCode: string }) => {
+        const record = flowCode === 'X' ? EXPORT_RECORD : IMPORT_RECORD;
+        const records = [record, { ...record, period: '2023' }];
+        const truncated = flowCode === cappedFlow;
+        return { records, totalCount: truncated ? 500 : records.length, truncated };
+      });
+      const result = await runToolContract(getTradeBalanceTool, {
+        reporter_code: 840,
+        period: ['2022', '2023'],
+      });
+      const flow = cappedFlow === 'X' ? 'export' : 'import';
+      const notice = `A preview response reached 500 records. Returned ${flow} sums may be partial. Balance and coverage ratio are unavailable. Narrow the commodity query.`;
+      expect(result.structuredContent).toMatchObject({ notice });
+      expect((result.structuredContent as { periods: object[] }).periods).toEqual(
+        ['2022', '2023'].map((period) => ({
+          period,
+          exportsUsd: 2_000_000_000,
+          importsUsd: 3_000_000_000,
+        })),
+      );
+      const text = textOf(result);
+      expect(text).toContain(notice);
+      expect(text).not.toContain('**Balance:**');
+      expect(text).not.toContain('**Coverage Ratio:**');
+    },
+  );
 
   it('marks surplus when exports > imports', async () => {
     fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
@@ -407,6 +504,9 @@ describe('getTradeBalanceTool', () => {
     ['S4', ['AG3', 'AG1'], 'AG3', 'AG1'],
     ['S4', ['AG3', '33'], 'AG3', '33'],
     ['S4', ['93', '93X'], '93', '93X'],
+    ['B4', ['4', '41'], '4', '41'],
+    ['B5', ['11', '111210'], '11', '111210'],
+    ['B5', ['TOTAL', '411'], 'TOTAL', '411'],
     // The earliest entry that overlaps a later one, with the first entry it overlaps.
     ['HS', ['01', '27', '2709', '0101'], '01', '0101'],
     // Codes past the 20-code cap count: a caller adds their follow-up balances to this one.
@@ -443,6 +543,47 @@ describe('getTradeBalanceTool', () => {
       expect(text).toContain(message);
       expect(text).toContain(hint);
       expect(text).toContain('reason overlapping_cmd_codes');
+    },
+  );
+
+  it.each([
+    ['B4', '41'],
+    ['B5', '111210'],
+  ] as const)(
+    'balances both %s flows with duplicate selectors counted once',
+    async (classification, cmdCode) => {
+      fetchMock.mockImplementation(({ flowCode }: { flowCode: string }) =>
+        Promise.resolve({
+          records: [
+            {
+              ...(flowCode === 'X' ? EXPORT_RECORD : IMPORT_RECORD),
+              classificationCode: classification,
+              cmdCode,
+            },
+          ],
+          totalCount: 1,
+          truncated: false,
+        }),
+      );
+      const output = await runToolContract(getTradeBalanceTool, {
+        reporter_code: 840,
+        period: ['2022'],
+        classification,
+        cmd_code: [cmdCode, cmdCode],
+      });
+      expect(fetchMock.mock.calls.map((call: readonly unknown[]) => call[0])).toEqual([
+        expect.objectContaining({ classificationCode: classification, cmdCode, flowCode: 'X' }),
+        expect.objectContaining({ classificationCode: classification, cmdCode, flowCode: 'M' }),
+      ]);
+      expect(output.structuredContent).toMatchObject({
+        classification,
+        cmdCodes: [cmdCode],
+        periods: [{ period: '2022', balanceUsd: -1_000_000_000 }],
+        mirrorCaveat: expect.stringContaining('selected BEC revision'),
+      });
+      expect(textOf(output)).toContain(`**Classification:** ${classification}`);
+      expect(textOf(output)).toContain(`**Commodities:** ${cmdCode}`);
+      expect(textOf(output)).toContain('Check isOriginalClassification');
     },
   );
 
@@ -570,7 +711,7 @@ describe('getTradeBalanceTool', () => {
       period: ['2022', '2023', '2024'],
     });
     const notice =
-      'Period 2023 was rate-limited; wait 5 seconds before requesting it again. A preview response reached 500 records; balance values may be incomplete. Narrow the commodity query.';
+      'Period 2023 was rate-limited; wait 5 seconds before requesting it again. A preview response reached 500 records. Returned export sums may be partial. Balance and coverage ratio are unavailable. Narrow the commodity query.';
     expect(result.structuredContent).toMatchObject({
       periods: [
         { period: '2022', exportsUsd: 2_000_000_000, importsUsd: 3_000_000_000 },

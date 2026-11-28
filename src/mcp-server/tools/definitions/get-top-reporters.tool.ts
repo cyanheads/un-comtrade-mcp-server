@@ -16,6 +16,7 @@ import {
   SINGLE_GOODS_CODE_SHAPE_MESSAGE,
   singleGoodsCodeMatchesClassification,
 } from '@/mcp-server/tools/comtrade-input.js';
+import { sumUsd, tradeNumberFormat } from '@/mcp-server/tools/trade-values.js';
 import { getComtradeDataService } from '@/services/comtrade-data/comtrade-data-service.js';
 import { getComtradeReferenceService } from '@/services/comtrade-reference/comtrade-reference-service.js';
 import { COMMODITY_CLASSIFICATIONS, HS_EDITIONS } from '@/services/comtrade-reference/types.js';
@@ -252,16 +253,11 @@ export const getTopReportersTool = tool('comtrade_get_top_reporters', {
         a.reporterCode - b.reporterCode,
     );
     const totalReporters = sorted.length;
-    let sum = 0;
-    let unresolvedValues = false;
-    for (const { primaryValueUsd } of sorted) {
-      if (primaryValueUsd === undefined) {
-        unresolvedValues = true;
-        break;
-      }
-      sum += primaryValueUsd;
-    }
-    const totalValueUsd = totalReporters > 0 && !unresolvedValues ? sum : undefined;
+    const unresolvedValues = sorted.some((row) => row.primaryValueUsd === undefined);
+    const totalValueUsd =
+      totalReporters > 0 && !unresolvedValues
+        ? sumUsd(sorted.map((row) => row.primaryValueUsd))
+        : undefined;
     const ambiguousIdentity = sorted.some((row) => row.referenceCaveat !== undefined);
     const truncated = result.truncated || Boolean(result.failedPeriods?.length);
 
@@ -316,11 +312,14 @@ export const getTopReportersTool = tool('comtrade_get_top_reporters', {
       result.coverageNotice,
     ];
     if (result.totalValueUsd !== undefined) {
-      lines.push(`**Total value of retrieved reporting areas:** ${result.totalValueUsd} USD`);
+      lines.push(
+        `**Total value of retrieved reporting areas:** ${tradeNumberFormat.format(result.totalValueUsd)} USD`,
+      );
     }
     for (const row of result.reporters) {
       lines.push(`\n**${escapeMarkdownInline(row.reporterDesc)}** (code ${row.reporterCode})`);
-      if (row.primaryValueUsd !== undefined) lines.push(`- Value: ${row.primaryValueUsd} USD`);
+      if (row.primaryValueUsd !== undefined)
+        lines.push(`- Value: ${tradeNumberFormat.format(row.primaryValueUsd)} USD`);
       if (row.rank !== undefined) lines.push(`- Rank: ${row.rank}`);
       if (row.sharePercent !== undefined) lines.push(`- Share: ${row.sharePercent}%`);
       if (row.referenceCaveat) lines.push(`- ${row.referenceCaveat}`);

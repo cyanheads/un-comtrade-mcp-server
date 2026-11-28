@@ -3,6 +3,11 @@
  * @module mcp-server/tools/comtrade-input
  */
 import { z } from '@cyanheads/mcp-ts-core';
+import {
+  BEC_LEVELS,
+  COMMODITY_CLASSIFICATIONS,
+  RANKED_GOODS_CLASSIFICATIONS,
+} from '@/services/comtrade-reference/types.js';
 
 /** Numeric M49 grammar, including unknown codes without catalog membership checks. */
 export const m49Schema = z.number().int().min(0).max(999);
@@ -26,7 +31,18 @@ export const goodsClassificationSchema = z
   .string()
   .trim()
   .toUpperCase()
-  .pipe(z.enum(['HS', 'H0', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'S1', 'S2', 'S3', 'S4', 'SS']));
+  .pipe(
+    z.enum(RANKED_GOODS_CLASSIFICATIONS, {
+      error: 'Use an HS classification (HS or H0–H6) or SITC (SS or S1–S4).',
+    }),
+  );
+
+/** Goods trade, balance, and catalog search accept the two converted BEC revisions. */
+export const tradeClassificationSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .pipe(z.enum(COMMODITY_CLASSIFICATIONS));
 /**
  * Services classifications the trade endpoint serves: EB as reported (the default, also for a
  * blank value), or UN Comtrade's converted EB10/EB02 series. EB10S is refused: its endpoint
@@ -104,7 +120,7 @@ export function periodsMatchFrequency(input: FrequencyInput): boolean {
 
 /** Rejection message for a goods code whose shape doesn't fit the selected classification. */
 export const GOODS_CODE_SHAPE_MESSAGE =
-  'Use HS codes with 2, 4 or 6 digits or legacy 9999AA under an HS classification; SITC codes (up to 5 characters, optional trailing X) need classification S1–S4 or SS. TOTAL and classification-specific AG selectors are supported.';
+  'Use 2, 4 or 6 digits or legacy 9999AA for HS, up to 5 characters with optional trailing X for SITC, 1–3 digits for B4, or 1–4 or 6 digits for B5. TOTAL and HS/SITC aggregation selectors are supported.';
 
 /** Rejection for rankings that accept only a single commodity at a time. */
 export const SINGLE_GOODS_CODE_SHAPE_MESSAGE =
@@ -125,8 +141,13 @@ export function goodsCodesMatchClassification(input: {
 }): boolean {
   const codes = typeof input.cmd_code === 'string' ? [input.cmd_code] : (input.cmd_code ?? []);
   const sitc = input.classification?.startsWith('S') === true;
+  const becLevels: readonly number[] | undefined =
+    input.classification === 'B4' || input.classification === 'B5'
+      ? BEC_LEVELS[input.classification]
+      : undefined;
   return codes.every((code) => {
     if (code === '' || code === 'TOTAL') return true;
+    if (becLevels) return becLevels.includes(code.length) && /^[0-9]+$/.test(code);
     // SITC memorandum items append X; the H0 catalog retains one legacy non-WCO selector.
     return sitc
       ? /^AG[1-5]$/.test(code) || (code.length <= 5 && /^[0-9]+X*$/.test(code))

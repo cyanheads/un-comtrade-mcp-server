@@ -457,7 +457,7 @@ describe('ComtradeReferenceService', () => {
           code: JsonRpcErrorCode.ValidationError,
           data: {
             reason: 'invalid_aggregation_level',
-            recovery: { hint: 'Use HS levels 2, 4, or 6, or SITC levels 1 through 5.' },
+            recovery: { hint: expect.stringContaining('Use HS levels 2, 4, or 6') },
           },
         },
       });
@@ -470,6 +470,78 @@ describe('ComtradeReferenceService', () => {
     });
     expect(invalid.isError).toBe(true);
     expect(JSON.stringify(invalid.content)).toContain('classification');
+  });
+
+  it('loads BEC revisions on demand and pages the selected hierarchy', async () => {
+    const fetch = stubFetch({
+      'B4.json': {
+        results: [
+          { id: '41', text: '41 - Capital goods excluding transport', parent: '4', aggrlevel: 2 },
+        ],
+      },
+      'B5.json': {
+        results: [
+          { id: '41', text: '41 - Textile goods', parent: '4', aggrlevel: 2 },
+          { id: '411', text: '411 - Intermediate textile goods', parent: '41', aggrlevel: 3 },
+          { id: '411110', text: '411110 - Primary textile inputs', parent: '411', aggrlevel: 6 },
+        ],
+      },
+    });
+    expect(startupFiles).not.toContain('B4.json');
+    expect(startupFiles).not.toContain('B5.json');
+    const b4 = await runToolContract(searchCommoditiesTool, {
+      query: '41',
+      classification: ' b4 ',
+    });
+    expect(searchCommoditiesTool.output.parse(b4.structuredContent).matches).toEqual([
+      expect.objectContaining({ id: '41', description: '41 - Capital goods excluding transport' }),
+    ]);
+    expect(JSON.stringify(b4.content)).toContain('Capital goods excluding transport');
+    for (const [offset, id, parent, level] of [
+      [0, '41', '4', 2],
+      [1, '411', '41', 3],
+      [2, '411110', '411', 6],
+    ] as const) {
+      const b5 = await runToolContract(searchCommoditiesTool, {
+        query: '41',
+        classification: 'B5',
+        limit: 1,
+        offset,
+      });
+      const page = searchCommoditiesTool.output.parse(b5.structuredContent);
+      expect(page.matches).toEqual([expect.objectContaining({ id, parent, aggrLevel: level })]);
+      expect(JSON.stringify(b5.content)).toContain(`aggrLevel: ${level} (BEC)`);
+      expect(page.nextOffset).toBe(offset < 2 ? offset + 1 : undefined);
+    }
+    const invalid = await runToolContract(searchCommoditiesTool, {
+      query: '41',
+      classification: 'B5',
+      aggr_level: 5,
+    });
+    expect(invalid.structuredContent).toMatchObject({
+      error: {
+        data: {
+          reason: 'invalid_aggregation_level',
+          recovery: { hint: expect.stringContaining('BEC') },
+        },
+      },
+    });
+    expect(JSON.stringify(invalid.content)).toContain('invalid_aggregation_level');
+    expect(fetch.mock.calls.map(([input]) => requestedFile(input))).toEqual(['B4.json', 'B5.json']);
+  });
+
+  it('reports an empty BEC catalog as unavailable and retries on a later request', async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({ results: [] }));
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ results: [{ id: '41', text: 'Capital goods', aggrlevel: 2 }] }),
+    );
+
+    await expect(ref.getCommodityCodes('B4')).rejects.toMatchObject({
+      code: JsonRpcErrorCode.SerializationError,
+      data: { filename: 'B4.json' },
+    });
+    expect((await ref.getCommodityCodes('B4')).has('41')).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('loads units lazily and retains unavailable and unknown codes honestly', async () => {
