@@ -25,7 +25,7 @@
     "COMTRADE_CLAMP_LIMITS": {
       "type": "boolean",
       "title": "Clamp trade page limits",
-      "description": "Serve up to 1,000 goods or services records when a larger page is requested. Disable to reject oversized page requests.",
+      "description": "Clamp oversized trade pages to 1,000 records and accept batch arrays of up to 1,000 entries. Disable to reject oversized pages and limit batch arrays to 120 periods or 200 codes or reporters.",
       "default": true
     },
     "COMTRADE_SUBSCRIPTION_KEY": {
